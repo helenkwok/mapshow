@@ -27,7 +27,6 @@ const map = new maplibregl.Map({
   zoom: DEFAULT_PRESET.zoom,
   pitch: DEFAULT_PRESET.pitch,
   bearing: DEFAULT_PRESET.bearing,
-  antialias: true,
   attributionControl: false,
 });
 
