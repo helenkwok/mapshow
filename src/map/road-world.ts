@@ -1,6 +1,10 @@
-import type { MapGeoJSONFeature } from "maplibre-gl";
 import { distanceMeters, type LngLatTuple } from "./building-feature";
-import { gameRoadFromFeature, isMotorRoad, type GameRoadRecord } from "./game-roads";
+import {
+  gameRoadFromFeature,
+  isMotorRoad,
+  type GameRoadFeature,
+  type GameRoadRecord,
+} from "./game-roads";
 
 export interface RoadWorldSegment {
   key: string;
@@ -54,7 +58,7 @@ function asLine(value: unknown): LngLatTuple[] | null {
   return points.length >= 2 ? removeConsecutiveDuplicates(points) : null;
 }
 
-function lineParts(feature: MapGeoJSONFeature): LngLatTuple[][] {
+function lineParts(feature: GameRoadFeature): LngLatTuple[][] {
   const geometry = feature.geometry as { type: string; coordinates?: unknown };
   if (geometry.type === "LineString") {
     const line = asLine(geometry.coordinates);
@@ -201,7 +205,7 @@ export function buildRoadGraph(segments: RoadWorldSegment[]): Pick<RoadWorld, "n
 }
 
 export function buildRoadWorld(
-  features: MapGeoJSONFeature[],
+  features: GameRoadFeature[],
   cameraCenter: LngLatTuple,
   radiusMeters: number,
   maxSegments: number,
