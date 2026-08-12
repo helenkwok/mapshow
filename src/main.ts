@@ -25,6 +25,7 @@ import {
   installGameRoadSource,
   type GameRoadSourceInstallation,
 } from "./map/game-roads";
+import type { DrivingSide } from "./map/road-lanes";
 import { buildRoadWorld, type RoadWorld } from "./map/road-world";
 import { RoadSurfaceLayer, type RoadSurfaceStats } from "./map/road-surface-layer";
 
@@ -50,6 +51,7 @@ const featureInfo = requiredElement<HTMLDivElement>("#feature-info");
 const buildingsToggle = requiredElement<HTMLButtonElement>("#buildings-toggle");
 const terrainToggle = requiredElement<HTMLButtonElement>("#terrain-toggle");
 const roadsToggle = requiredElement<HTMLButtonElement>("#roads-toggle");
+const trafficToggle = requiredElement<HTMLButtonElement>("#traffic-toggle");
 const resetView = requiredElement<HTMLButtonElement>("#reset-view");
 const presetButtons = requiredElement<HTMLDivElement>("#preset-buttons");
 
@@ -76,6 +78,7 @@ let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
 let terrainEnabled = true;
 let roadSurfacesEnabled = true;
+let drivingSide: DrivingSide = DEFAULT_PRESET.drivingSide;
 let buildingMode: "procedural" | "style" | "none" = "none";
 let lastLod3Candidates = 0;
 let gameRoadSource: GameRoadSourceInstallation = { enabled: false, debugVisible: false };
@@ -83,6 +86,9 @@ let roadStats: RoadSurfaceStats = {
   activeSegments: 0,
   graphNodes: 0,
   directedArcs: 0,
+  activeLanes: 0,
+  laneConnections: 0,
+  intersectionPolygons: 0,
   created: 0,
   replaced: 0,
   removed: 0,
@@ -108,6 +114,11 @@ function updateRoadButton(): void {
   roadsToggle.textContent = gameRoadSource.enabled
     ? `Road surfaces: ${roadSurfacesEnabled ? "on" : "off"}`
     : "Road surfaces: configure tiles";
+}
+
+function updateTrafficButton(): void {
+  trafficToggle.setAttribute("aria-pressed", String(drivingSide === "left"));
+  trafficToggle.textContent = `Traffic: ${drivingSide}`;
 }
 
 function installWorldTerrain(): void {
@@ -203,7 +214,7 @@ function refreshLod3Stream(): void {
 
 function refreshRoadSurfaces(): void {
   const world = collectRoadWorld();
-  roadStats = roadSurfaceLayer.setWorld(world, map, terrainEnabled);
+  roadStats = roadSurfaceLayer.setWorld(world, map, terrainEnabled, drivingSide);
 }
 
 function updateStatus(): void {
@@ -221,7 +232,7 @@ function updateStatus(): void {
   const roads = !gameRoadSource.enabled
     ? " · game roads unconfigured"
     : roadStats.activeSegments > 0
-      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} segments · ${roadStats.graphNodes} graph nodes`
+      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · junctions ${roadStats.intersectionPolygons} · ${drivingSide}-traffic`
       : roadSurfacesEnabled && zoom >= ROAD_SURFACE_MIN_ZOOM
         ? " · game roads loading"
         : "";
@@ -237,6 +248,7 @@ map.on("load", () => {
   updateBuildingButton();
   updateTerrainButton();
   updateRoadButton();
+  updateTrafficButton();
   updateStatus();
 });
 
@@ -282,10 +294,19 @@ roadsToggle.addEventListener("click", () => {
   updateStatus();
 });
 
+trafficToggle.addEventListener("click", () => {
+  drivingSide = drivingSide === "left" ? "right" : "left";
+  refreshRoadSurfaces();
+  updateTrafficButton();
+  updateStatus();
+});
+
 resetView.addEventListener("click", () => {
   buildingDetailLayer.clear();
   roadSurfaceLayer.clear();
   lastLod3Candidates = 0;
+  drivingSide = DEFAULT_PRESET.drivingSide;
+  updateTrafficButton();
   map.easeTo({
     center: DEFAULT_PRESET.center,
     zoom: DEFAULT_PRESET.zoom,
@@ -305,6 +326,8 @@ presetButtons.addEventListener("click", (event) => {
   buildingDetailLayer.clear();
   roadSurfaceLayer.clear();
   lastLod3Candidates = 0;
+  drivingSide = preset.drivingSide;
+  updateTrafficButton();
   map.flyTo({
     center: preset.center,
     zoom: preset.zoom,
@@ -383,6 +406,10 @@ map.on("click", (event) => {
               surfaceSegments: roadStats.activeSegments,
               graphNodes: roadStats.graphNodes,
               directedArcs: roadStats.directedArcs,
+              laneCenterlines: roadStats.activeLanes,
+              candidateLaneConnections: roadStats.laneConnections,
+              intersectionPolygons: roadStats.intersectionPolygons,
+              drivingSide,
             }
           : "configure VITE_GAME_ROADS_TILEJSON to enable",
       },
@@ -396,3 +423,4 @@ map.on("click", (event) => {
 updateBuildingButton();
 updateTerrainButton();
 updateRoadButton();
+updateTrafficButton();
