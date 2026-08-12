@@ -36,6 +36,7 @@ class RoadTagNormalizerTest {
       7
     );
 
+    assertEquals(2, attrs.get("schema_version"));
     assertEquals(1234L, attrs.get("osm_id"));
     assertEquals("primary", attrs.get("road_class"));
     assertEquals(2, attrs.get("lanes"));
