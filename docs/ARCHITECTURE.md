@@ -21,13 +21,15 @@ OpenFreeMap style + MVT
           ├─ roads / water / land use / labels
           └─ building layer
                   │
-                  ▼
-          basic 3D extrusion
+                  ├─ LOD1 massing
+                  └─ LOD2 procedural façade bands/patterns
 ```
 
-The implementation in `src/map/buildings.ts` first reuses an existing building `fill-extrusion` layer if the selected style supplies one. Otherwise it discovers an OpenMapTiles vector source with `source-layer: building` and adds a Mapshow extrusion layer.
+`src/map/buildings.ts` discovers an OpenMapTiles vector source with `source-layer: building`. If it is available, Mapshow hides the style-provided building extrusion and installs its own managed LOD layers. If no usable building source can be found, Mapshow falls back to the style-provided extrusion.
 
-This is deliberately only the baseline. A map-style extrusion is not the target procedural-building system.
+The close-detail LOD currently splits each building vertically into a ground/storefront band, a main façade body and a roof cap. Runtime-generated texture patterns provide brick, masonry and glass/window treatments without adding another renderer or downloading façade imagery.
+
+This is deliberately not the final building system. Patterned map extrusions are the LOD2 bridge between plain boxes and true procedural geometry.
 
 ## Stage 2 — game-road tile profile
 
@@ -62,7 +64,7 @@ The browser-side terrain worker should:
 
 ## Stage 4 — procedural buildings
 
-MGame demonstrates a useful design direction: OSM footprints can be the structural input to buildings that are much richer than boxes. Mapshow should implement an independent modular generator with components such as:
+MGame demonstrates a useful design direction: OSM footprints can be the structural input to buildings that are much richer than boxes. Mapshow implements this independently in progressive levels of detail.
 
 ```text
 footprint + tags
@@ -73,23 +75,24 @@ footprint + tags
       │    ├─ entrance/storefront level
       │    ├─ repeated façade floors
       │    └─ parapet/roof transition
-      ├─ façade bay generator
-      │    ├─ windows
-      │    ├─ doors
-      │    └─ material zones
+      ├─ façade system
+      │    ├─ generated LOD2 patterns       ← current
+      │    └─ LOD3 bay/window geometry      ← next
       ├─ roof generator
       └─ optional custom landmark model
 ```
 
-The first implementation should be deterministic from building ID plus tags so the same building does not change appearance between sessions.
+`src/map/building-profile.ts` owns deterministic height and façade-family inference. `src/map/building-patterns.ts` generates the current façade textures at runtime. The same building inputs therefore lead to the same profile without relying on commercial imagery.
 
 ### Detail levels
 
 - **LOD 0:** footprint only or hidden.
-- **LOD 1:** simple extrusion.
-- **LOD 2:** façade materials/windows without individual geometry where possible.
-- **LOD 3:** near-camera procedural façade and roof geometry.
+- **LOD 1:** simple extrusion for medium-distance context.
+- **LOD 2:** vertically segmented extrusion with generated façade/window/material patterns. *(implemented)*
+- **LOD 3:** near-camera procedural façade bays, entrances and roof geometry.
 - **Collision:** separate low-complexity mesh, generated only within an interaction radius.
+
+The LOD2 patterns are screen/style textures rather than metric façade geometry. LOD3 should move the close-range representation into a geometry-capable layer so windows, doors, balconies and roof forms have real dimensions.
 
 ## Stage 5 — Three.js/world layer
 
@@ -103,7 +106,8 @@ Before adding vehicle physics, Mapshow should be able to:
 
 - navigate arbitrary OpenFreeMap-covered locations;
 - identify and inspect buildings from vector tiles;
-- swap basic building extrusion for a procedural generator;
+- transition from LOD1 massing to LOD2 procedural façades;
+- replace LOD2 with true near-camera building geometry without changing the map-data adapter;
 - ingest one real DEM tile provider;
 - display roads correctly across tile boundaries;
 - distinguish ground roads, bridges and tunnels;
