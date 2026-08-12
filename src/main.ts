@@ -1,4 +1,4 @@
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./styles.css";
 import { ensureBuildingExtrusions, setBuildingExtrusionsVisible } from "./map/buildings";
@@ -6,15 +6,19 @@ import { DEFAULT_PRESET, PRESETS } from "./map/presets";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
-const status = document.querySelector<HTMLDivElement>("#status");
-const featureInfo = document.querySelector<HTMLDivElement>("#feature-info");
-const buildingsToggle = document.querySelector<HTMLButtonElement>("#buildings-toggle");
-const resetView = document.querySelector<HTMLButtonElement>("#reset-view");
-const presetButtons = document.querySelector<HTMLDivElement>("#preset-buttons");
-
-if (!status || !featureInfo || !buildingsToggle || !resetView || !presetButtons) {
-  throw new Error("Mapshow UI did not initialise correctly.");
+function requiredElement<T extends Element>(selector: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) {
+    throw new Error(`Mapshow UI element not found: ${selector}`);
+  }
+  return element;
 }
+
+const status = requiredElement<HTMLDivElement>("#status");
+const featureInfo = requiredElement<HTMLDivElement>("#feature-info");
+const buildingsToggle = requiredElement<HTMLButtonElement>("#buildings-toggle");
+const resetView = requiredElement<HTMLButtonElement>("#reset-view");
+const presetButtons = requiredElement<HTMLDivElement>("#preset-buttons");
 
 const map = new maplibregl.Map({
   container: "map",
