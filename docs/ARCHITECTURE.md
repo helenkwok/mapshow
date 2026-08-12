@@ -8,9 +8,10 @@ Mapshow is being built as a set of replaceable data and world-generation adapter
 2. **Do not confuse cartography with simulation.** OpenMapTiles is excellent for visual context but deliberately normalises or omits attributes needed for driving physics.
 3. **Keep terrain independent from vector maps.** Elevation is a separate data product and should have its own provider/cache interface.
 4. **Generate detail near the viewer.** Expensive building detail and collision should be generated only where it matters.
-5. **Preserve provenance.** Data licences and attribution remain separate from Mapshow's Apache-2.0 code licence.
+5. **Bound every expensive layer.** Dense cities must degrade to cheaper LODs rather than allowing unbounded geometry or GPU allocations.
+6. **Preserve provenance.** Data licences and attribution remain separate from Mapshow's Apache-2.0 code licence.
 
-## Stage 1 — visual map foundation
+## Visual map and building pipeline
 
 ```text
 OpenFreeMap style + MVT
@@ -19,53 +20,67 @@ OpenFreeMap style + MVT
       MapLibre GL JS
           │
           ├─ roads / water / land use / labels
-          └─ building layer
+          └─ OpenMapTiles building features
                   │
                   ├─ LOD1 massing
                   ├─ LOD2 façade bands/patterns
-                  └─ LOD3 selected-building geometry → Three.js custom layer
+                  └─ LOD3 nearby-building geometry → Three.js custom layer
 ```
 
 `src/map/buildings.ts` discovers an OpenMapTiles vector source with `source-layer: building`. If it is available, Mapshow hides the style-provided building extrusion and installs its own managed LOD layers. If no usable building source can be found, Mapshow falls back to the style-provided extrusion.
 
-LOD2 splits each building vertically into a ground/storefront band, a main façade body and a roof cap. Runtime-generated texture patterns provide brick, masonry and glass/window treatments without downloading façade imagery.
+LOD2 splits each building vertically into a ground/storefront band, a main façade body and a roof cap. Runtime-generated patterns provide brick, masonry and glass/window treatments without downloading façade imagery.
 
-LOD3 is implemented in `src/map/selected-building-layer.ts`. A clicked vector-tile building supplies the actual polygon footprint and derived building profile. The footprint is converted from geographic coordinates into a local metric frame, detailed geometry is generated in meters, and a Three.js custom layer transforms the result back into MapLibre's Mercator world for rendering with the map's shared WebGL context.
+LOD3 is now split into three responsibilities:
 
-## Stage 2 — game-road tile profile
+- `src/map/building-feature.ts` extracts/deduplicates a real rendered footprint, derives a stable key and computes its camera distance.
+- `src/map/building-detail-layer.ts` owns Three.js geometry, caching and disposal.
+- `src/main.ts` owns the current streaming policy and budgets.
 
-Create a custom Planetiler profile in a separate package/service. Unlike the visual OpenMapTiles transportation layer, it should retain data required to reconstruct topology and driving surfaces:
+## LOD3 streaming policy
 
-- stable OSM way/node identifiers;
-- `highway` and service class;
-- `lanes` and lane direction hints;
-- `maxspeed`;
-- explicit/derived `width`;
-- `surface` and `smoothness`;
-- `oneway`;
-- `junction`;
-- `bridge`, `tunnel`, `layer`;
-- access restrictions;
-- enough node connectivity information to stitch a graph across tile boundaries.
+LOD3 activates only at close zoom and only for a bounded near-camera set.
 
-The output can remain MVT if the schema is carefully defined. Visual tiles and game-road tiles should be independently versioned.
+Current policy:
 
-## Stage 3 — elevation
+```text
+minimum zoom              16.1
+camera detail radius      260 m
+maximum active buildings  24
+maximum windows/building  96
+maximum bays/edge          8
+maximum detailed floors   10
+```
 
-Define an elevation-provider interface before choosing one physical encoding. Candidate inputs include Copernicus DEM and higher-resolution regional open elevation sources where licensing permits.
+The viewport's rendered `building` features are converted into candidates. Duplicate appearances of the same source/geometry are collapsed by a stable feature key. Candidates outside the metric radius are discarded, the remainder are sorted nearest-first, and only the first 24 are sent to the Three.js layer.
 
-The browser-side terrain worker should:
+LOD2 remains visible underneath/outside this budget. A dense Manhattan or Hong Kong view therefore falls back to patterned extrusions instead of trying to generate detailed geometry for every visible building.
 
-1. fetch/decode elevation tiles;
-2. generate a local terrain mesh;
-3. stitch edges against neighbouring tiles;
-4. drape or reconcile road geometry with terrain;
-5. keep bridges/tunnels on separate vertical layers;
-6. generate simplified collision geometry near the player only.
+### Incremental lifecycle
 
-## Stage 4 — procedural buildings
+`BuildingDetailLayer.setBuildings()` performs a keyed diff:
 
-MGame demonstrates a useful design direction: OSM footprints can be the structural input to buildings that are much richer than boxes. Mapshow implements this independently in progressive levels of detail.
+```text
+previous active keys        desired active keys
+         │                         │
+         └──────── compare ────────┘
+                    │
+          ┌─────────┴─────────┐
+          │                   │
+      still active        no longer needed
+      keep buffers         dispose geometry
+          │
+          └──────── newly desired
+                    generate once
+```
+
+Unchanged building groups stay in the Three.js scene and retain their GPU buffers. Removed groups traverse their meshes and dispose `BufferGeometry` immediately. Shared materials remain owned by the custom layer and are disposed only when the layer itself is removed.
+
+This is the first explicit GPU-memory budget in Mapshow.
+
+## Procedural building geometry
+
+MGame demonstrates a useful design direction: OSM footprints can be the structural input to buildings that are much richer than boxes. Mapshow implements this independently.
 
 ```text
 footprint + tags
@@ -88,18 +103,7 @@ footprint + tags
                 └─ flat roof + parapet fallback
 ```
 
-`src/map/building-profile.ts` owns deterministic height and façade-family inference. `src/map/building-patterns.ts` generates LOD2 façade textures at runtime. `src/map/selected-building-layer.ts` owns the first geometry-capable LOD3 implementation.
-
-### Detail levels
-
-- **LOD 0:** footprint only or hidden.
-- **LOD 1:** simple extrusion for medium-distance context. *(implemented)*
-- **LOD 2:** vertically segmented extrusion with generated façade/window/material patterns. *(implemented)*
-- **LOD 3:** metric façade-window, entrance and roof geometry for the selected building. *(implemented foundation)*
-- **LOD 3 streaming:** generate and retire LOD3 geometry automatically for a bounded set of nearby buildings. *(next building milestone)*
-- **Collision:** separate low-complexity mesh, generated only within an interaction radius.
-
-The current LOD3 intentionally processes one selected building. This keeps the proof of concept bounded while validating the coordinate transforms, geometry generation, shared WebGL renderer, GPU cleanup and real-vector-footprint workflow before multi-building streaming is introduced.
+`src/map/building-profile.ts` owns deterministic height and façade-family inference. `src/map/building-patterns.ts` generates LOD2 façade textures at runtime. LOD3 converts each active footprint into its own local metric frame before generating geometry.
 
 ### LOD3 coordinate model
 
@@ -115,7 +119,7 @@ local meter coordinates
        procedural geometry
              │
              ▼
-local-meter → Mercator model matrix
+Three.js Group position + meter scale in Mercator units
              │
              ▼
 MapLibre modelViewProjectionMatrix
@@ -124,15 +128,44 @@ MapLibre modelViewProjectionMatrix
 shared WebGL framebuffer
 ```
 
-Keeping procedural geometry local avoids building meshes directly from large world coordinates and establishes the same coordinate boundary later needed by physics and floating-origin world streaming.
+Each building group uses local meter geometry and receives its own Mercator position/scale transform. This keeps vertex coordinates small and establishes the same coordinate boundary later needed by physics and floating-origin world streaming.
 
-## Stage 5 — Three.js/world layer
+## Game-road tile profile
 
-MapLibre remains responsible for the geographic map and large-scale visual context. Three.js is introduced only for game-specific geometry that requires real metric dimensions rather than style-layer decoration.
+Create a custom Planetiler profile in a separate package/service. Unlike the visual OpenMapTiles transportation layer, it should retain data required to reconstruct topology and driving surfaces:
 
-The next world-layer step is to move from selection-driven LOD3 to a bounded near-camera building set with explicit geometry budgets. Generated meshes must be removed and their GPU buffers disposed as buildings leave the detail radius.
+- stable OSM way/node identifiers;
+- `highway` and service class;
+- `lanes` and lane direction hints;
+- `maxspeed`;
+- explicit/derived `width`;
+- `surface` and `smoothness`;
+- `oneway`;
+- `junction`;
+- `bridge`, `tunnel`, `layer`;
+- access restrictions;
+- enough node connectivity information to stitch a graph across tile boundaries.
 
-Keep global map coordinates out of the physics engine. Convert nearby geographic coordinates into a local metric frame and shift the origin as the player moves to avoid floating-point precision loss.
+The output can remain MVT if the schema is carefully defined. Visual tiles and game-road tiles should be independently versioned.
+
+## Elevation
+
+Define an elevation-provider interface before choosing one physical encoding. Candidate inputs include Copernicus DEM and higher-resolution regional open elevation sources where licensing permits.
+
+The browser-side terrain worker should:
+
+1. fetch/decode elevation tiles;
+2. generate a local terrain mesh;
+3. stitch edges against neighbouring tiles;
+4. drape or reconcile road geometry with terrain;
+5. keep bridges/tunnels on separate vertical layers;
+6. generate simplified collision geometry near the player only.
+
+## Three.js/world layer
+
+MapLibre remains responsible for the geographic map and large-scale visual context. Three.js is used only for game-specific geometry that requires real metric dimensions rather than style-layer decoration.
+
+The building streamer is intentionally still main-thread and viewport-driven. The next world-streaming work should move expensive candidate preparation/mesh generation toward workers, add frame-time-aware budgets, and eventually use a player/floating-origin coordinate system shared with terrain, roads and physics.
 
 ## Near-term acceptance criteria
 
@@ -141,9 +174,10 @@ Before adding vehicle physics, Mapshow should be able to:
 - navigate arbitrary OpenFreeMap-covered locations;
 - identify and inspect buildings from vector tiles;
 - transition from LOD1 massing to LOD2 procedural façades;
-- generate LOD3 façade and roof geometry from a real selected building footprint; *(implemented)*
-- automatically stream LOD3 for a bounded set of nearby buildings;
+- generate metric LOD3 façade and roof geometry from real building footprints; *(implemented)*
+- automatically stream LOD3 for a bounded set of nearby buildings; *(implemented)*
+- dispose geometry as buildings leave the detail radius; *(implemented)*
 - ingest one real DEM tile provider;
 - display roads correctly across tile boundaries;
 - distinguish ground roads, bridges and tunnels;
-- unload distant generated geometry without leaking GPU memory.
+- move expensive world-generation work off the main thread where practical.

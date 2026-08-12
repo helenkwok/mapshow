@@ -6,13 +6,18 @@ import {
   setBuildingLayersVisible,
 } from "./map/buildings";
 import { buildingProfileFromProperties } from "./map/building-profile";
-import { DEFAULT_PRESET, PRESETS } from "./map/presets";
 import {
-  SelectedBuildingLayer,
+  candidateFromFeature,
+  type BuildingCandidate,
   type LngLatTuple,
-} from "./map/selected-building-layer";
+} from "./map/building-feature";
+import { BuildingDetailLayer } from "./map/building-detail-layer";
+import { DEFAULT_PRESET, PRESETS } from "./map/presets";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+const LOD3_MIN_ZOOM = 16.1;
+const LOD3_RADIUS_METERS = 260;
+const LOD3_MAX_BUILDINGS = 24;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -20,51 +25,6 @@ function requiredElement<T extends Element>(selector: string): T {
     throw new Error(`Mapshow UI element not found: ${selector}`);
   }
   return element;
-}
-
-function isLngLatTuple(value: unknown): value is LngLatTuple {
-  return (
-    Array.isArray(value) &&
-    value.length >= 2 &&
-    typeof value[0] === "number" &&
-    Number.isFinite(value[0]) &&
-    typeof value[1] === "number" &&
-    Number.isFinite(value[1])
-  );
-}
-
-function asRing(value: unknown): LngLatTuple[] | null {
-  if (!Array.isArray(value)) return null;
-  const ring = value.filter(isLngLatTuple);
-  return ring.length >= 4 ? ring : null;
-}
-
-function ringArea(ring: LngLatTuple[]): number {
-  let area = 0;
-  for (let i = 0; i < ring.length; i += 1) {
-    const a = ring[i];
-    const b = ring[(i + 1) % ring.length];
-    area += a[0] * b[1] - b[0] * a[1];
-  }
-  return Math.abs(area / 2);
-}
-
-function outerRingFromGeometry(geometry: {
-  type: string;
-  coordinates?: unknown;
-}): LngLatTuple[] | null {
-  if (geometry.type === "Polygon" && Array.isArray(geometry.coordinates)) {
-    return asRing(geometry.coordinates[0]);
-  }
-
-  if (geometry.type === "MultiPolygon" && Array.isArray(geometry.coordinates)) {
-    const rings = geometry.coordinates
-      .map((polygon) => (Array.isArray(polygon) ? asRing(polygon[0]) : null))
-      .filter((ring): ring is LngLatTuple[] => ring !== null);
-    return rings.sort((a, b) => ringArea(b) - ringArea(a))[0] ?? null;
-  }
-
-  return null;
 }
 
 const status = requiredElement<HTMLDivElement>("#status");
@@ -90,11 +50,11 @@ map.addControl(
   "bottom-right",
 );
 
-const selectedBuildingLayer = new SelectedBuildingLayer();
+const buildingDetailLayer = new BuildingDetailLayer();
 let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
 let buildingMode: "procedural" | "style" | "none" = "none";
-let hasLod3Selection = false;
+let lastLod3Candidates = 0;
 
 function updateBuildingButton(): void {
   buildingsToggle.setAttribute("aria-pressed", String(buildingsVisible));
@@ -108,13 +68,13 @@ function installBuildingLayers(): void {
   setBuildingLayersVisible(map, buildingLayerIds, buildingsVisible);
 
   const firstSymbolLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
-  if (!map.getLayer(selectedBuildingLayer.id)) {
-    map.addLayer(selectedBuildingLayer, firstSymbolLayer);
+  if (!map.getLayer(buildingDetailLayer.id)) {
+    map.addLayer(buildingDetailLayer, firstSymbolLayer);
   }
 
   if (buildingMode === "procedural") {
     status.textContent =
-      "OpenFreeMap loaded · LOD2 façades enabled · click a building for LOD3 geometry";
+      "OpenFreeMap loaded · LOD2 façades enabled · LOD3 streams automatically at close zoom";
   } else if (buildingMode === "style") {
     status.textContent = "OpenFreeMap loaded · using style-provided 3D buildings";
   } else {
@@ -122,7 +82,61 @@ function installBuildingLayers(): void {
   }
 }
 
-map.on("load", installBuildingLayers);
+function collectLod3Candidates(): BuildingCandidate[] {
+  if (
+    !buildingsVisible ||
+    buildingMode !== "procedural" ||
+    map.getZoom() < LOD3_MIN_ZOOM ||
+    !map.isStyleLoaded()
+  ) {
+    return [];
+  }
+
+  const center = map.getCenter();
+  const cameraCenter: LngLatTuple = [center.lng, center.lat];
+  const deduplicated = new Map<string, BuildingCandidate>();
+
+  for (const feature of map.queryRenderedFeatures()) {
+    if (feature.sourceLayer !== "building") continue;
+    const candidate = candidateFromFeature(feature, cameraCenter);
+    if (!candidate || candidate.distanceMeters > LOD3_RADIUS_METERS) continue;
+    const existing = deduplicated.get(candidate.key);
+    if (!existing || candidate.ring.length > existing.ring.length) {
+      deduplicated.set(candidate.key, candidate);
+    }
+  }
+
+  return [...deduplicated.values()]
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, LOD3_MAX_BUILDINGS);
+}
+
+function refreshLod3Stream(): void {
+  const candidates = collectLod3Candidates();
+  lastLod3Candidates = candidates.length;
+  buildingDetailLayer.setBuildings(candidates);
+}
+
+function updateStatus(): void {
+  const center = map.getCenter();
+  const zoom = map.getZoom();
+  const detail =
+    buildingDetailLayer.activeCount > 0
+      ? ` · LOD3 ${buildingDetailLayer.activeCount}/${LOD3_MAX_BUILDINGS} buildings within ${LOD3_RADIUS_METERS} m`
+      : zoom >= 15.3 && buildingMode === "procedural"
+        ? " · façade LOD2"
+        : "";
+  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${detail}`;
+}
+
+map.on("load", () => {
+  installBuildingLayers();
+  refreshLod3Stream();
+});
+
+map.on("idle", () => {
+  refreshLod3Stream();
+});
 
 map.on("error", (event) => {
   const message = event.error?.message ?? "Unknown map error";
@@ -133,15 +147,18 @@ buildingsToggle.addEventListener("click", () => {
   buildingsVisible = !buildingsVisible;
   setBuildingLayersVisible(map, buildingLayerIds, buildingsVisible);
   if (!buildingsVisible) {
-    selectedBuildingLayer.clearSelection();
-    hasLod3Selection = false;
+    buildingDetailLayer.clear();
+    lastLod3Candidates = 0;
+  } else {
+    refreshLod3Stream();
   }
   updateBuildingButton();
+  updateStatus();
 });
 
 resetView.addEventListener("click", () => {
-  selectedBuildingLayer.clearSelection();
-  hasLod3Selection = false;
+  buildingDetailLayer.clear();
+  lastLod3Candidates = 0;
   map.easeTo({
     center: DEFAULT_PRESET.center,
     zoom: DEFAULT_PRESET.zoom,
@@ -158,8 +175,8 @@ presetButtons.addEventListener("click", (event) => {
   const preset = PRESETS[button.dataset.preset ?? ""];
   if (!preset) return;
 
-  selectedBuildingLayer.clearSelection();
-  hasLod3Selection = false;
+  buildingDetailLayer.clear();
+  lastLod3Candidates = 0;
   map.flyTo({
     center: preset.center,
     zoom: preset.zoom,
@@ -171,13 +188,13 @@ presetButtons.addEventListener("click", (event) => {
 });
 
 map.on("moveend", () => {
-  const center = map.getCenter();
-  const detail = hasLod3Selection
-    ? " · selected-building LOD3"
-    : map.getZoom() >= 15.3 && buildingMode === "procedural"
-      ? " · façade LOD2"
-      : "";
-  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${map.getZoom().toFixed(1)}${detail}`;
+  refreshLod3Stream();
+  updateStatus();
+});
+
+map.on("zoomend", () => {
+  refreshLod3Stream();
+  updateStatus();
 });
 
 map.on("click", (event) => {
@@ -186,26 +203,14 @@ map.on("click", (event) => {
     .find((feature) => feature.sourceLayer === "building");
 
   if (!building) {
-    selectedBuildingLayer.clearSelection();
-    hasLod3Selection = false;
     featureInfo.textContent = "No rendered building was found under the pointer.";
     return;
   }
 
   const properties = (building.properties ?? {}) as Record<string, unknown>;
   const profile = buildingProfileFromProperties(properties);
-  const ring = outerRingFromGeometry(
-    building.geometry as { type: string; coordinates?: unknown },
-  );
-
-  if (ring && buildingsVisible) {
-    selectedBuildingLayer.setSelection({ ring, profile });
-    hasLod3Selection = true;
-  } else {
-    selectedBuildingLayer.clearSelection();
-    hasLod3Selection = false;
-  }
-
+  const center = map.getCenter();
+  const candidate = candidateFromFeature(building, [center.lng, center.lat]);
   const usefulProperties = Object.fromEntries(
     [
       "name",
@@ -214,6 +219,7 @@ map.on("click", (event) => {
       "render_min_height",
       "building",
       "building:levels",
+      "osm_id",
     ]
       .filter((key) => properties[key] !== undefined)
       .map((key) => [key, properties[key]]),
@@ -226,8 +232,14 @@ map.on("click", (event) => {
         height: `${profile.height.toFixed(1)} m`,
         minHeight: `${profile.minHeight.toFixed(1)} m`,
         estimatedLevels: profile.estimatedLevels,
-        lod3: ring
-          ? "generated windows, frames, entrance and roof geometry"
+        lod3: candidate
+          ? {
+              key: candidate.key,
+              distance: `${candidate.distanceMeters.toFixed(0)} m from camera center`,
+              active: candidate.distanceMeters <= LOD3_RADIUS_METERS && map.getZoom() >= LOD3_MIN_ZOOM,
+              streamCount: lastLod3Candidates,
+              budget: LOD3_MAX_BUILDINGS,
+            }
           : "footprint geometry unavailable",
       },
       source: usefulProperties,
