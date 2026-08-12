@@ -3,25 +3,32 @@ import type { LayerSpecification, Map as MapLibreMap, MapGeoJSONFeature } from "
 export const GAME_ROAD_SOURCE_ID = "mapshow-game-roads";
 export const GAME_ROAD_SOURCE_LAYER = "game_road";
 export const GAME_ROAD_DEBUG_LAYER_ID = "mapshow-game-roads-debug";
+export const GAME_ROAD_SCHEMA_VERSION = 2;
 
 export interface GameRoadRecord {
+  schemaVersion: number;
+  segmentId: number;
   osmId: number;
   highway: string;
   roadClass: string;
   name?: string;
   ref?: string;
+  access?: string;
+  vehicle?: string;
+  motorVehicle?: string;
   lanes?: number;
   speedKmh?: number;
   widthM: number;
   widthSource: "tag" | "lanes" | "class_default";
   surface?: string;
   surfaceClass: "paved" | "unpaved" | "unknown";
+  smoothness?: string;
   oneway: -1 | 0 | 1;
   bridge: boolean;
   tunnel: boolean;
   layer: number;
-  firstNode?: number;
-  lastNode?: number;
+  firstNode: number;
+  lastNode: number;
   nodeCount: number;
 }
 
@@ -58,6 +65,8 @@ function booleanProperty(properties: Record<string, unknown>, key: string): bool
 export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord | null {
   if (feature.sourceLayer !== GAME_ROAD_SOURCE_LAYER) return null;
   const properties = (feature.properties ?? {}) as Record<string, unknown>;
+  const schemaVersion = numberProperty(properties, "schema_version");
+  const segmentId = numberProperty(properties, "segment_id");
   const osmId = numberProperty(properties, "osm_id");
   const highway = stringProperty(properties, "highway");
   const roadClass = stringProperty(properties, "road_class");
@@ -66,9 +75,13 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
   const surfaceClass = stringProperty(properties, "surface_class");
   const oneway = numberProperty(properties, "oneway");
   const layer = numberProperty(properties, "layer");
+  const firstNode = numberProperty(properties, "first_node");
+  const lastNode = numberProperty(properties, "last_node");
   const nodeCount = numberProperty(properties, "node_count");
 
   if (
+    schemaVersion !== GAME_ROAD_SCHEMA_VERSION ||
+    segmentId === undefined ||
     osmId === undefined ||
     !highway ||
     !roadClass ||
@@ -77,31 +90,47 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
     !["paved", "unpaved", "unknown"].includes(surfaceClass ?? "") ||
     ![-1, 0, 1].includes(oneway ?? Number.NaN) ||
     layer === undefined ||
+    firstNode === undefined ||
+    lastNode === undefined ||
     nodeCount === undefined
   ) {
     return null;
   }
 
   return {
+    schemaVersion,
+    segmentId,
     osmId,
     highway,
     roadClass,
     name: stringProperty(properties, "name"),
     ref: stringProperty(properties, "ref"),
+    access: stringProperty(properties, "access"),
+    vehicle: stringProperty(properties, "vehicle"),
+    motorVehicle: stringProperty(properties, "motor_vehicle"),
     lanes: numberProperty(properties, "lanes"),
     speedKmh: numberProperty(properties, "speed_kmh"),
     widthM,
     widthSource: widthSource as GameRoadRecord["widthSource"],
     surface: stringProperty(properties, "surface"),
     surfaceClass: surfaceClass as GameRoadRecord["surfaceClass"],
+    smoothness: stringProperty(properties, "smoothness"),
     oneway: oneway as -1 | 0 | 1,
     bridge: booleanProperty(properties, "bridge"),
     tunnel: booleanProperty(properties, "tunnel"),
     layer,
-    firstNode: numberProperty(properties, "first_node"),
-    lastNode: numberProperty(properties, "last_node"),
+    firstNode,
+    lastNode,
     nodeCount,
   };
+}
+
+export function isMotorRoad(record: GameRoadRecord): boolean {
+  const denied = new Set(["no", "private"]);
+  if (record.motorVehicle && denied.has(record.motorVehicle.toLowerCase())) return false;
+  if (record.vehicle && denied.has(record.vehicle.toLowerCase())) return false;
+  if (record.access && denied.has(record.access.toLowerCase())) return false;
+  return true;
 }
 
 export function installGameRoadSource(map: MapLibreMap): GameRoadSourceInstallation {
