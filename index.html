@@ -14,7 +14,7 @@
         <header class="brand">
           <span class="eyebrow">OPEN WORLD MAP LAB</span>
           <h1>mapshow</h1>
-          <p>OpenStreetMap-derived vector data rendered as a lightweight 3D world.</p>
+          <p>OpenStreetMap-derived vector data and open elevation rendered as a lightweight 3D world.</p>
         </header>
 
         <div class="control-group">
@@ -29,15 +29,16 @@
 
         <div class="control-row">
           <button type="button" id="buildings-toggle" aria-pressed="true">3D buildings: on</button>
+          <button type="button" id="terrain-toggle" aria-pressed="true">Terrain: on</button>
           <button type="button" id="reset-view">Reset view</button>
         </div>
 
         <div class="status-card">
           <span class="control-label">Selected building</span>
-          <div id="feature-info">Click a building to inspect the vector-tile properties available to the renderer.</div>
+          <div id="feature-info">Click a building to inspect its vector-tile properties, derived profile and terrain elevation.</div>
         </div>
 
-        <div class="status-line" id="status" role="status">Loading OpenFreeMap…</div>
+        <div class="status-line" id="status" role="status">Loading OpenFreeMap and terrain…</div>
       </section>
     </main>
 
