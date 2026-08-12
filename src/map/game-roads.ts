@@ -24,12 +24,17 @@ export interface GameRoadRecord {
   vehicle?: string;
   motorVehicle?: string;
   lanes?: number;
+  lanesForward?: number;
+  lanesBackward?: number;
   speedKmh?: number;
+  speedForwardKmh?: number;
+  speedBackwardKmh?: number;
   widthM: number;
   widthSource: "tag" | "lanes" | "class_default";
   surface?: string;
   surfaceClass: "paved" | "unpaved" | "unknown";
   smoothness?: string;
+  junction?: string;
   oneway: -1 | 0 | 1;
   bridge: boolean;
   tunnel: boolean;
@@ -127,12 +132,17 @@ export function gameRoadFromFeature(feature: GameRoadFeature): GameRoadRecord | 
     vehicle: stringProperty(properties, "vehicle"),
     motorVehicle: stringProperty(properties, "motor_vehicle"),
     lanes: numberProperty(properties, "lanes"),
+    lanesForward: numberProperty(properties, "lanes_forward"),
+    lanesBackward: numberProperty(properties, "lanes_backward"),
     speedKmh: numberProperty(properties, "speed_kmh"),
+    speedForwardKmh: numberProperty(properties, "speed_forward_kmh"),
+    speedBackwardKmh: numberProperty(properties, "speed_backward_kmh"),
     widthM,
     widthSource: widthSource as GameRoadRecord["widthSource"],
     surface: stringProperty(properties, "surface"),
     surfaceClass: surfaceClass as GameRoadRecord["surfaceClass"],
     smoothness: stringProperty(properties, "smoothness"),
+    junction: stringProperty(properties, "junction"),
     oneway: oneway as -1 | 0 | 1,
     bridge: booleanProperty(properties, "bridge"),
     tunnel: booleanProperty(properties, "tunnel"),
