@@ -227,6 +227,18 @@ function classifyTurn(
   return angle > 0 ? "left" : "right";
 }
 
+function closestOrdinalLane(fromLane: RoadLane, candidates: RoadLane[]): RoadLane | undefined {
+  if (candidates.length === 0) return undefined;
+  const fromRank = fromLane.laneCountInDirection <= 1
+    ? 0
+    : fromLane.ordinal / (fromLane.laneCountInDirection - 1);
+  return [...candidates].sort((a, b) => {
+    const aRank = a.laneCountInDirection <= 1 ? 0 : a.ordinal / (a.laneCountInDirection - 1);
+    const bRank = b.laneCountInDirection <= 1 ? 0 : b.ordinal / (b.laneCountInDirection - 1);
+    return Math.abs(aRank - fromRank) - Math.abs(bRank - fromRank);
+  })[0];
+}
+
 export function buildLaneNetwork(world: RoadWorld, drivingSide: DrivingSide): RoadLaneNetwork {
   const layouts = new Map<number, SegmentLaneLayout>();
   const lanes = new Map<string, RoadLane>();
@@ -255,15 +267,24 @@ export function buildLaneNetwork(world: RoadWorld, drivingSide: DrivingSide): Ro
     const outgoing = outgoingByNode.get(nodeId) ?? [];
     if (!node?.position || incoming.length === 0 || outgoing.length === 0) continue;
 
+    const outgoingBySegment = new Map<number, RoadLane[]>();
+    for (const lane of outgoing) {
+      const bucket = outgoingBySegment.get(lane.segmentId) ?? [];
+      bucket.push(lane);
+      outgoingBySegment.set(lane.segmentId, bucket);
+    }
+
     for (const fromLane of incoming) {
       const fromSegment = bySegment.get(fromLane.segmentId);
       if (!fromSegment) continue;
-      for (const toLane of outgoing) {
-        if (fromLane.segmentId === toLane.segmentId) continue; // no implicit U-turns in the candidate lane graph
-        const toSegment = bySegment.get(toLane.segmentId);
+      for (const [toSegmentId, candidates] of outgoingBySegment) {
+        if (fromLane.segmentId === toSegmentId) continue; // no implicit U-turns in the candidate lane graph
+        const toSegment = bySegment.get(toSegmentId);
         if (!toSegment) continue;
         const turn = classifyTurn(fromSegment, toSegment, node.position);
         if (turn === "uturn") continue;
+        const toLane = closestOrdinalLane(fromLane, candidates);
+        if (!toLane) continue;
         connections.push({
           nodeId,
           fromLaneId: fromLane.laneId,
