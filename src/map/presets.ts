@@ -4,6 +4,7 @@ export type PlacePreset = {
   zoom: number;
   pitch: number;
   bearing: number;
+  drivingSide: "left" | "right";
 };
 
 export const PRESETS: Record<string, PlacePreset> = {
@@ -13,6 +14,7 @@ export const PRESETS: Record<string, PlacePreset> = {
     zoom: 15.6,
     pitch: 62,
     bearing: -18,
+    drivingSide: "left",
   },
   "hong-kong": {
     label: "Hong Kong",
@@ -20,6 +22,7 @@ export const PRESETS: Record<string, PlacePreset> = {
     zoom: 16,
     pitch: 65,
     bearing: 22,
+    drivingSide: "left",
   },
   manhattan: {
     label: "Manhattan",
@@ -27,6 +30,7 @@ export const PRESETS: Record<string, PlacePreset> = {
     zoom: 16.1,
     pitch: 68,
     bearing: -28,
+    drivingSide: "right",
   },
   tokyo: {
     label: "Tokyo",
@@ -34,6 +38,7 @@ export const PRESETS: Record<string, PlacePreset> = {
     zoom: 15.9,
     pitch: 64,
     bearing: 18,
+    drivingSide: "left",
   },
 };
 

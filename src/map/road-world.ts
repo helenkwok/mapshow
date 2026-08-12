@@ -1,7 +1,6 @@
 import { distanceMeters, type LngLatTuple } from "./building-feature";
 import {
   gameRoadFromFeature,
-  isMotorRoad,
   type GameRoadFeature,
   type GameRoadRecord,
 } from "./game-roads";
@@ -110,17 +109,10 @@ function mergeDirected(a: LngLatTuple[], b: LngLatTuple[]): LngLatTuple[] | null
   return null;
 }
 
-function tryMerge(a: LngLatTuple[], b: LngLatTuple[]): LngLatTuple[] | null {
-  const reversedA = [...a].reverse();
-  const reversedB = [...b].reverse();
-  return (
-    mergeDirected(a, b) ??
-    mergeDirected(a, reversedB) ??
-    mergeDirected(b, a) ??
-    mergeDirected(reversedB, a) ??
-    mergeDirected(reversedA, b) ??
-    mergeDirected(b, reversedA)
-  );
+function tryMergePreservingDirection(a: LngLatTuple[], b: LngLatTuple[]): LngLatTuple[] | null {
+  // MVT clipping preserves source line direction. Do not reverse fragments here: first/last OSM node IDs,
+  // oneway, directional lane tags and lane offsets all depend on retaining first-node -> last-node orientation.
+  return mergeDirected(a, b) ?? mergeDirected(b, a);
 }
 
 export function stitchRoadFragments(fragments: LngLatTuple[][]): LngLatTuple[][] {
@@ -135,7 +127,7 @@ export function stitchRoadFragments(fragments: LngLatTuple[][]): LngLatTuple[][]
     changed = false;
     outer: for (let a = 0; a < parts.length; a += 1) {
       for (let b = a + 1; b < parts.length; b += 1) {
-        const merged = tryMerge(parts[a], parts[b]);
+        const merged = tryMergePreservingDirection(parts[a], parts[b]);
         if (!merged) continue;
         parts[a] = removeConsecutiveDuplicates(merged);
         parts.splice(b, 1);
@@ -214,7 +206,9 @@ export function buildRoadWorld(
 
   for (const feature of features) {
     const record = gameRoadFromFeature(feature);
-    if (!record || !isMotorRoad(record)) continue;
+    if (!record) continue;
+    // access/vehicle restrictions are routing policy, not physical-existence filters. Restricted/private roads
+    // remain in the world geometry and retain their tags for a later vehicle-policy layer.
     const parts = lineParts(feature);
     if (parts.length === 0) continue;
     const existing = accumulators.get(record.segmentId);

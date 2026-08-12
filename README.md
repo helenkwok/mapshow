@@ -7,11 +7,11 @@ The project deliberately separates **map delivery** from **game/world generation
 - [OpenFreeMap](https://openfreemap.org/) provides preprocessed OpenStreetMap-derived vector tiles for the visual basemap.
 - [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) renders the global map and DEM terrain in the browser.
 - [AWS Terrain Tiles / Tilezen](https://registry.opendata.aws/terrain-tiles/) provides the default real elevation source in Terrarium format.
-- Mapshow discovers the OpenMapTiles `building` layer and progressively enriches it instead of treating the source style's extrusion as the final building representation.
-- Three.js is used only for close-range game/world geometry that MapLibre's normal style layers are not intended to generate.
-- `road-schema/` generates a separate simulation-oriented OSM road tileset rather than treating visual cartographic road tiles as physics-ready data.
+- Mapshow progressively enriches OpenMapTiles building footprints instead of treating simple extrusion as the final building representation.
+- Three.js is used for close-range world geometry that normal map style layers are not intended to generate.
+- `road-schema/` generates a separate simulation-oriented OSM road tileset rather than treating visual cartographic roads as physics-ready data.
 
-This repository does **not** contain source code or assets copied from MGame or Hop.Earth. Those projects are architectural references for features we can implement independently.
+This repository does **not** contain source code or assets copied from MGame or Hop.Earth. Those projects are architectural references for features implemented independently here.
 
 ## Run locally
 
@@ -31,26 +31,22 @@ npm run preview
 
 ## Current prototype
 
-The prototype provides:
+The prototype now includes real DEM terrain, bounded procedural building LODs, a dedicated topology-aware `game_road` tileset, and a local road-world renderer. Road ways are split at shared OSM junction nodes in Planetiler, grouped/stiched after MVT clipping in the browser, converted into a directed graph, and rendered as metric-width Three.js carriageways.
 
-- OpenFreeMap Liberty style with no API key;
-- real 3D DEM terrain from AWS Terrain Tiles / Tilezen;
-- MapLibre `raster-dem` decoding using Terrarium encoding;
-- terrain hillshade and a terrain on/off control;
-- terrain-aware grounding of streamed Three.js building detail;
-- LOD1 building massing, LOD2 procedural façade patterns, and bounded multi-building LOD3 geometry;
-- generated Three.js windows, frames, entrances and roofs;
-- cached building groups with GPU-buffer disposal as buildings leave the detail set;
-- **game-road schema v2**, generated with Planetiler after splitting OSM roads at shared intersection nodes;
-- stable `segment_id` + parent `osm_id`, width, lanes, surface, access, direction and grade-separation metadata;
-- browser-side tile-fragment grouping/stitching and a directed local road graph;
-- **terrain-aware metric carriageway meshes** generated from `width_m` and active road centerlines;
-- junction pads at shared graph nodes;
-- bounded road streaming at 650 m / 240 active segments;
-- road-surface enable/disable control when a dedicated game-road TileJSON is configured;
-- building visibility control and feature/profile/terrain inspection;
-- presets for Adelaide, Hong Kong, Manhattan, and Tokyo;
-- responsive desktop/mobile controls.
+The road layer now also provides:
+
+- smoothed terrain-following elevation profiles instead of raw DEM-to-vertex draping;
+- eased bridge/tunnel transitions at mixed vertical-mode endpoints;
+- approach-shaped intersection polygons built from real incident-road headings and widths;
+- directional lane counts from `lanes`, `lanes:forward`, and `lanes:backward` when available;
+- inferred physical lane counts only when explicit lane counts are absent;
+- lane centerline geometry with explicit left- or right-hand traffic placement;
+- a candidate lane-to-lane connection graph at shared road nodes;
+- preset-aware traffic side: Adelaide, Hong Kong, and Tokyo use left-hand traffic; Manhattan uses right-hand traffic;
+- a manual traffic-side toggle for arbitrary locations;
+- bounded road streaming at 650 m / 240 active topology segments.
+
+Access restrictions such as private/no-access roads are retained as routing metadata and do not make the physical road disappear from the world geometry.
 
 ## Terrain pipeline
 
@@ -67,10 +63,14 @@ MapLibre raster-dem source
                     │
           ┌─────────┴─────────┐
           ▼                   ▼
-  LOD3 building Z       road-surface Z
+  LOD3 building Z       road profile sampler
+                              │
+                       smooth / grade-limit
+                              │
+                    carriageways + junctions
 ```
 
-The terrain source is behind `src/map/terrain.ts`, so a future Copernicus GLO-30 pipeline or higher-resolution regional DEM can replace the default source without changing the rest of the application. The current AWS dataset is a multi-source global terrain product; it is not simply Copernicus GLO-30.
+The terrain provider is isolated in `src/map/terrain.ts`, so Copernicus GLO-30 or higher-resolution regional data can later replace/override the current source without changing building or road contracts.
 
 ## Building LOD strategy
 
@@ -80,44 +80,44 @@ LOD2  footprint + height     → segmented patterned façade
 LOD3  nearby footprints      → metric window/door/roof geometry in Three.js
 ```
 
-LOD3 activates at zoom 16.1 or closer. It considers rendered buildings within 260 m of the camera center, sorts them nearest-first and keeps at most 24 buildings active. Each building is capped at 96 generated windows, with per-edge and floor caps as additional geometry guardrails.
+LOD3 activates at zoom 16.1 or closer, considers buildings within 260 m, and keeps at most 24 detailed buildings active with explicit per-building geometry caps and GPU disposal.
 
 ## Game-road pipeline
-
-Visual OpenFreeMap roads remain cartographic context. Mapshow's simulation-road path is separate:
 
 ```text
 OpenStreetMap PBF
       │
       ▼
 Planetiler MapshowRoadProfile
-      │
-      ├─ split ways at shared OSM junction nodes
-      └─ retain driving/vertical metadata
+      ├─ split at shared OSM junction nodes
+      └─ retain identity / lanes / width / access / vertical metadata
       │
       ▼
  game_road MVT schema v2
       │
       ▼
-MapLibre vector source
-      │
-      ▼
 road-world assembler
-      ├─ group clipped duplicates by segment_id
-      ├─ stitch safe overlaps
-      ├─ connect first_node / last_node graph nodes
-      └─ apply one-way direction
+      ├─ group by segment_id
+      ├─ direction-preserving tile-fragment stitching
+      ├─ first_node / last_node topology
+      └─ directed road graph
       │
       ▼
-Three.js road-surface layer
-      ├─ densify centerlines
-      ├─ sample DEM
-      ├─ offset by width_m / 2
-      ├─ fill shared junctions
-      └─ stream/dispose bounded local geometry
+lane network
+      ├─ left/right traffic placement
+      ├─ directed lane centerlines
+      └─ candidate node connections
+      │
+      ▼
+road profile + surface generation
+      ├─ ~8 m DEM samples
+      ├─ elevation smoothing / grade limiting
+      ├─ bridge/tunnel approach easing
+      ├─ metric carriageway strips
+      └─ approach-shaped intersection polygons
 ```
 
-The generator is in [`road-schema/`](road-schema/) and the contract/runtime details are in [`docs/GAME_ROADS.md`](docs/GAME_ROADS.md). Compile/test it with Java 21:
+The generator is in [`road-schema/`](road-schema/) and details are in [`docs/GAME_ROADS.md`](docs/GAME_ROADS.md). Compile/test it with Java 21:
 
 ```bash
 mvn -B -f road-schema/pom.xml verify
@@ -131,40 +131,27 @@ VITE_GAME_ROADS_DEBUG=false
 npm run dev
 ```
 
-When `VITE_GAME_ROADS_TILEJSON` is absent, Mapshow disables the road-surface control instead of substituting the OpenFreeMap cartographic transportation layer.
+Without `VITE_GAME_ROADS_TILEJSON`, Mapshow disables simulation road surfaces rather than substituting OpenFreeMap's cartographic transportation layer.
 
-Bridge/tunnel vertical placement is currently a **visual heuristic**, not surveyed engineering geometry. OSM `bridge`, `tunnel`, and `layer` keep crossings separate, while a later refinement stage will smooth grades, model approaches and consume explicit elevation data where available.
+## Scope boundary
 
-## Architecture direction
+The lane connection graph is deliberately **candidate connectivity**, not final legal turn routing. Turn restriction relations, `turn:lanes`, lane-change rules, signal phases, surveyed bridge deck elevations, collision bodies, and vehicle dynamics are still separate future layers.
 
-```text
-OpenStreetMap planet data
-    ├─ OpenFreeMap/OpenMapTiles tiles ──> visual basemap + contextual buildings
-    └─ Mapshow game-road tiles ─────────> topology + simulation road attributes
-
-DEM elevation tiles ───────────────────> terrain surface
-
-                         local world streaming
-                              │
-                  ┌───────────┴───────────┐
-                  │                       │
-           visual geometry       collision / physics
-```
-
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the staged plan.
+Bridge and tunnel vertical positions are therefore improved visual/world approximations, not engineering survey geometry.
 
 ## Roadmap
 
-1. **Map foundation** — OpenFreeMap + MapLibre + basic 3D building extrusion. *(complete)*
-2. **Procedural building LOD2** — façade segmentation, generated window/material patterns, façade families and roof caps. *(complete)*
-3. **Procedural building LOD3 foundation** — real window/door/roof geometry through a Three.js custom layer. *(complete)*
-4. **LOD3 streaming** — bounded, nearest-first multi-building generation with caching and disposal. *(complete)*
-5. **Real DEM terrain** — pluggable raster-DEM provider, hillshade, terrain control and terrain-aware LOD3 anchoring. *(complete)*
-6. **Game-road schema** — dedicated Planetiler profile and browser adapter. *(complete)*
-7. **Road graph + surfaces** — OSM-intersection splitting, local directed graph, DEM-aligned carriageway strips and junction pads. *(current)*
-8. **Road refinement** — proper intersection polygons, lane centerlines, grade smoothing, bridge/tunnel approaches and turn restrictions.
-9. **Terrain refinement** — optional Copernicus GLO-30/self-hosted pipeline plus higher-resolution regional DEMs where licensing permits.
-10. **World streaming/physics** — workers, floating origin, collision budgets and vehicle physics.
+1. Map foundation — complete.
+2. Procedural building LOD2 — complete.
+3. Procedural building LOD3 — complete.
+4. Bounded building streaming — complete.
+5. Real DEM terrain — complete.
+6. Dedicated game-road schema — complete.
+7. Topology-aware road graph and carriageway surfaces — complete.
+8. **Road refinement: intersection polygons, lane centerlines/connectivity, grade smoothing and traffic side — current.**
+9. Turn restrictions + lane policy + collision/physics bodies.
+10. Terrain refinement and worker/floating-origin world streaming.
+11. Vehicle controller and driving simulation.
 
 ## Data and attribution
 
