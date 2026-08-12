@@ -1,9 +1,16 @@
-import type { LayerSpecification, Map as MapLibreMap, MapGeoJSONFeature } from "maplibre-gl";
+import type {
+  GeoJSONFeature,
+  LayerSpecification,
+  Map as MapLibreMap,
+  MapGeoJSONFeature,
+} from "maplibre-gl";
 
 export const GAME_ROAD_SOURCE_ID = "mapshow-game-roads";
 export const GAME_ROAD_SOURCE_LAYER = "game_road";
 export const GAME_ROAD_DEBUG_LAYER_ID = "mapshow-game-roads-debug";
 export const GAME_ROAD_SCHEMA_VERSION = 2;
+
+export type GameRoadFeature = GeoJSONFeature | MapGeoJSONFeature;
 
 export interface GameRoadRecord {
   schemaVersion: number;
@@ -63,8 +70,16 @@ function booleanProperty(properties: Record<string, unknown>, key: string): bool
   return ["true", "yes", "1"].includes(String(value).toLowerCase());
 }
 
-export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord | null {
-  if (feature.sourceLayer !== GAME_ROAD_SOURCE_LAYER) return null;
+function featureSourceLayer(feature: GameRoadFeature): string | undefined {
+  return "sourceLayer" in feature ? feature.sourceLayer : undefined;
+}
+
+export function gameRoadFromFeature(feature: GameRoadFeature): GameRoadRecord | null {
+  // queryRenderedFeatures() exposes sourceLayer while querySourceFeatures() does not; callers of the latter
+  // already constrain the query to GAME_ROAD_SOURCE_LAYER.
+  const sourceLayer = featureSourceLayer(feature);
+  if (sourceLayer !== undefined && sourceLayer !== GAME_ROAD_SOURCE_LAYER) return null;
+
   const properties = (feature.properties ?? {}) as Record<string, unknown>;
   const schemaVersion = numberProperty(properties, "schema_version");
   const segmentId = numberProperty(properties, "segment_id");
