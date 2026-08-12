@@ -129,11 +129,11 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
   };
 }
 
+/** Access restrictions are retained for routing policy; only explicit motor/vehicle/access=no is excluded here. */
 export function isMotorRoad(record: GameRoadRecord): boolean {
-  const denied = new Set(["no", "private"]);
-  if (record.motorVehicle && denied.has(record.motorVehicle.toLowerCase())) return false;
-  if (record.vehicle && denied.has(record.vehicle.toLowerCase())) return false;
-  if (record.access && denied.has(record.access.toLowerCase())) return false;
+  if (record.motorVehicle?.toLowerCase() === "no") return false;
+  if (record.vehicle?.toLowerCase() === "no") return false;
+  if (record.access?.toLowerCase() === "no") return false;
   return true;
 }
 
