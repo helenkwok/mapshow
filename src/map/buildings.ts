@@ -1,4 +1,9 @@
-import type { LayerSpecification, Map as MapLibreMap } from "maplibre-gl";
+import type {
+  ExpressionSpecification,
+  FilterSpecification,
+  LayerSpecification,
+  Map as MapLibreMap,
+} from "maplibre-gl";
 import {
   DEFAULT_BUILDING_HEIGHT,
   GROUND_FLOOR_HEIGHT,
@@ -74,9 +79,56 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
 
   const source = sourceLayer.source;
   const firstSymbolLayer = layers.find((layer) => layer.type === "symbol")?.id;
-  const height = ["coalesce", ["get", "render_height"], DEFAULT_BUILDING_HEIGHT];
-  const minHeight = ["coalesce", ["get", "render_min_height"], 0];
-  const groundTop = ["min", ["+", minHeight, GROUND_FLOOR_HEIGHT], height];
+
+  const height: ExpressionSpecification = [
+    "coalesce",
+    ["get", "render_height"],
+    DEFAULT_BUILDING_HEIGHT,
+  ];
+  const minHeight: ExpressionSpecification = [
+    "coalesce",
+    ["get", "render_min_height"],
+    0,
+  ];
+  const groundTop: ExpressionSpecification = [
+    "min",
+    ["+", minHeight, GROUND_FLOOR_HEIGHT],
+    height,
+  ];
+  const roofTop: ExpressionSpecification = ["+", height, ROOF_CAP_HEIGHT];
+
+  const lowRiseFilter: FilterSpecification = ["<", height, LOW_RISE_MAX_HEIGHT];
+  const midRiseFilter: FilterSpecification = [
+    "all",
+    [">=", height, LOW_RISE_MAX_HEIGHT],
+    ["<", height, MID_RISE_MAX_HEIGHT],
+  ];
+  const highRiseFilter: FilterSpecification = [">=", height, MID_RISE_MAX_HEIGHT];
+
+  const lodColor: ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    height,
+    0,
+    "#d7d1c8",
+    30,
+    "#c1bcb4",
+    100,
+    "#a6a7a7",
+    250,
+    "#8a9095",
+  ];
+  const roofColor: ExpressionSpecification = [
+    "interpolate",
+    ["linear"],
+    height,
+    0,
+    "#706a62",
+    60,
+    "#5d6265",
+    160,
+    "#4a555c",
+  ];
 
   addLayerIfMissing(
     map,
@@ -88,24 +140,12 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
       minzoom: 13.5,
       maxzoom: 15.3,
       paint: {
-        "fill-extrusion-color": [
-          "interpolate",
-          ["linear"],
-          height,
-          0,
-          "#d7d1c8",
-          30,
-          "#c1bcb4",
-          100,
-          "#a6a7a7",
-          250,
-          "#8a9095",
-        ],
+        "fill-extrusion-color": lodColor,
         "fill-extrusion-height": height,
         "fill-extrusion-base": minHeight,
         "fill-extrusion-opacity": 0.92,
       },
-    } as LayerSpecification,
+    },
     firstSymbolLayer,
   );
 
@@ -124,7 +164,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
         "fill-extrusion-opacity": 1,
         "fill-extrusion-vertical-gradient": false,
       },
-    } as LayerSpecification,
+    },
     firstSymbolLayer,
   );
 
@@ -136,7 +176,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
       source,
       "source-layer": "building",
       minzoom: 15.3,
-      filter: ["<", height, LOW_RISE_MAX_HEIGHT],
+      filter: lowRiseFilter,
       paint: {
         "fill-extrusion-pattern": BUILDING_PATTERNS.brick,
         "fill-extrusion-height": height,
@@ -144,7 +184,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
         "fill-extrusion-opacity": 1,
         "fill-extrusion-vertical-gradient": false,
       },
-    } as LayerSpecification,
+    },
     firstSymbolLayer,
   );
 
@@ -156,11 +196,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
       source,
       "source-layer": "building",
       minzoom: 15.3,
-      filter: [
-        "all",
-        [">=", height, LOW_RISE_MAX_HEIGHT],
-        ["<", height, MID_RISE_MAX_HEIGHT],
-      ],
+      filter: midRiseFilter,
       paint: {
         "fill-extrusion-pattern": BUILDING_PATTERNS.masonry,
         "fill-extrusion-height": height,
@@ -168,7 +204,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
         "fill-extrusion-opacity": 1,
         "fill-extrusion-vertical-gradient": false,
       },
-    } as LayerSpecification,
+    },
     firstSymbolLayer,
   );
 
@@ -180,7 +216,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
       source,
       "source-layer": "building",
       minzoom: 15.3,
-      filter: [">=", height, MID_RISE_MAX_HEIGHT],
+      filter: highRiseFilter,
       paint: {
         "fill-extrusion-pattern": BUILDING_PATTERNS.glass,
         "fill-extrusion-height": height,
@@ -188,7 +224,7 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
         "fill-extrusion-opacity": 1,
         "fill-extrusion-vertical-gradient": false,
       },
-    } as LayerSpecification,
+    },
     firstSymbolLayer,
   );
 
@@ -201,22 +237,12 @@ export function installProceduralBuildings(map: MapLibreMap): BuildingInstallati
       "source-layer": "building",
       minzoom: 15.3,
       paint: {
-        "fill-extrusion-color": [
-          "interpolate",
-          ["linear"],
-          height,
-          0,
-          "#706a62",
-          60,
-          "#5d6265",
-          160,
-          "#4a555c",
-        ],
-        "fill-extrusion-height": ["+", height, ROOF_CAP_HEIGHT],
+        "fill-extrusion-color": roofColor,
+        "fill-extrusion-height": roofTop,
         "fill-extrusion-base": height,
         "fill-extrusion-opacity": 1,
       },
-    } as LayerSpecification,
+    },
     firstSymbolLayer,
   );
 
