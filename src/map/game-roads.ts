@@ -27,6 +27,7 @@ export interface GameRoadRecord {
   bridge: boolean;
   tunnel: boolean;
   layer: number;
+  priority: number;
   firstNode: number;
   lastNode: number;
   nodeCount: number;
@@ -75,6 +76,7 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
   const surfaceClass = stringProperty(properties, "surface_class");
   const oneway = numberProperty(properties, "oneway");
   const layer = numberProperty(properties, "layer");
+  const priority = numberProperty(properties, "priority");
   const firstNode = numberProperty(properties, "first_node");
   const lastNode = numberProperty(properties, "last_node");
   const nodeCount = numberProperty(properties, "node_count");
@@ -90,6 +92,7 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
     !["paved", "unpaved", "unknown"].includes(surfaceClass ?? "") ||
     ![-1, 0, 1].includes(oneway ?? Number.NaN) ||
     layer === undefined ||
+    priority === undefined ||
     firstNode === undefined ||
     lastNode === undefined ||
     nodeCount === undefined
@@ -119,6 +122,7 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
     bridge: booleanProperty(properties, "bridge"),
     tunnel: booleanProperty(properties, "tunnel"),
     layer,
+    priority,
     firstNode,
     lastNode,
     nodeCount,
