@@ -23,23 +23,29 @@ interface Point3 extends Point2 {
   z: number;
 }
 
+interface EdgeBasis {
+  start: Point2;
+  unit: Point2;
+  outward: Point2;
+  length: number;
+}
+
 const WINDOW_OFFSET = 0.08;
 const FRAME_OFFSET = 0.1;
 const DOOR_OFFSET = 0.11;
 const GROUND_DETAIL_HEIGHT = 3.6;
 const MAX_FACADE_FLOORS = 12;
 const MAX_BAYS_PER_EDGE = 12;
-const FLAT_ROOF_OFFSET = 0.76;
+const ROOF_BASE_OFFSET = 0.76;
 
 function samePoint(a: LngLatTuple, b: LngLatTuple): boolean {
   return Math.abs(a[0] - b[0]) < 1e-10 && Math.abs(a[1] - b[1]) < 1e-10;
 }
 
 function openRing(ring: LngLatTuple[]): LngLatTuple[] {
-  if (ring.length > 2 && samePoint(ring[0], ring[ring.length - 1])) {
-    return ring.slice(0, -1);
-  }
-  return [...ring];
+  return ring.length > 2 && samePoint(ring[0], ring[ring.length - 1])
+    ? ring.slice(0, -1)
+    : [...ring];
 }
 
 function signedArea(points: Point2[]): number {
@@ -52,6 +58,14 @@ function signedArea(points: Point2[]): number {
   return area / 2;
 }
 
+function centroid(points: Point2[]): Point2 {
+  const sum = points.reduce(
+    (result, point) => ({ x: result.x + point.x, y: result.y + point.y }),
+    { x: 0, y: 0 },
+  );
+  return { x: sum.x / points.length, y: sum.y / points.length };
+}
+
 function isConvex(points: Point2[]): boolean {
   if (points.length < 3) return false;
   let sign = 0;
@@ -61,19 +75,26 @@ function isConvex(points: Point2[]): boolean {
     const c = points[(i + 2) % points.length];
     const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
     if (Math.abs(cross) < 1e-6) continue;
-    const current = Math.sign(cross);
-    if (sign === 0) sign = current;
-    else if (current !== sign) return false;
+    const currentSign = Math.sign(cross);
+    if (sign === 0) sign = currentSign;
+    else if (sign !== currentSign) return false;
   }
   return true;
 }
 
-function centroid(points: Point2[]): Point2 {
-  const total = points.reduce(
-    (sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }),
-    { x: 0, y: 0 },
-  );
-  return { x: total.x / points.length, y: total.y / points.length };
+function edgeBasis(points: Point2[], edgeIndex: number, area: number): EdgeBasis | null {
+  const start = points[edgeIndex];
+  const end = points[(edgeIndex + 1) % points.length];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) return null;
+  const unit = { x: dx / length, y: dy / length };
+  const outward =
+    area >= 0
+      ? { x: unit.y, y: -unit.x }
+      : { x: -unit.y, y: unit.x };
+  return { start, unit, outward, length };
 }
 
 function pushQuad(
@@ -85,9 +106,7 @@ function pushQuad(
   d: Point3,
 ): void {
   const base = positions.length / 3;
-  for (const point of [a, b, c, d]) {
-    positions.push(point.x, point.y, point.z);
-  }
+  for (const point of [a, b, c, d]) positions.push(point.x, point.y, point.z);
   indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
@@ -99,9 +118,7 @@ function pushTriangle(
   c: Point3,
 ): void {
   const base = positions.length / 3;
-  for (const point of [a, b, c]) {
-    positions.push(point.x, point.y, point.z);
-  }
+  for (const point of [a, b, c]) positions.push(point.x, point.y, point.z);
   indices.push(base, base + 1, base + 2);
 }
 
@@ -116,9 +133,7 @@ function geometryFromBuffers(positions: number[], indices: number[]): THREE.Buff
 function addRectOnEdge(
   positions: number[],
   indices: number[],
-  edgeStart: Point2,
-  unit: Point2,
-  outward: Point2,
+  edge: EdgeBasis,
   alongStart: number,
   alongEnd: number,
   zStart: number,
@@ -126,12 +141,12 @@ function addRectOnEdge(
   offset: number,
 ): void {
   const start = {
-    x: edgeStart.x + unit.x * alongStart + outward.x * offset,
-    y: edgeStart.y + unit.y * alongStart + outward.y * offset,
+    x: edge.start.x + edge.unit.x * alongStart + edge.outward.x * offset,
+    y: edge.start.y + edge.unit.y * alongStart + edge.outward.y * offset,
   };
   const end = {
-    x: edgeStart.x + unit.x * alongEnd + outward.x * offset,
-    y: edgeStart.y + unit.y * alongEnd + outward.y * offset,
+    x: edge.start.x + edge.unit.x * alongEnd + edge.outward.x * offset,
+    y: edge.start.y + edge.unit.y * alongEnd + edge.outward.y * offset,
   };
   pushQuad(
     positions,
@@ -146,9 +161,7 @@ function addRectOnEdge(
 function addWindowFrame(
   positions: number[],
   indices: number[],
-  edgeStart: Point2,
-  unit: Point2,
-  outward: Point2,
+  edge: EdgeBasis,
   left: number,
   right: number,
   bottom: number,
@@ -156,61 +169,15 @@ function addWindowFrame(
 ): void {
   const frameWidth = Math.min(0.12, (right - left) * 0.12);
   const frameHeight = Math.min(0.12, (top - bottom) * 0.12);
-  addRectOnEdge(
-    positions,
-    indices,
-    edgeStart,
-    unit,
-    outward,
-    left - frameWidth,
-    left,
-    bottom - frameHeight,
-    top + frameHeight,
-    FRAME_OFFSET,
-  );
-  addRectOnEdge(
-    positions,
-    indices,
-    edgeStart,
-    unit,
-    outward,
-    right,
-    right + frameWidth,
-    bottom - frameHeight,
-    top + frameHeight,
-    FRAME_OFFSET,
-  );
-  addRectOnEdge(
-    positions,
-    indices,
-    edgeStart,
-    unit,
-    outward,
-    left,
-    right,
-    bottom - frameHeight,
-    bottom,
-    FRAME_OFFSET,
-  );
-  addRectOnEdge(
-    positions,
-    indices,
-    edgeStart,
-    unit,
-    outward,
-    left,
-    right,
-    top,
-    top + frameHeight,
-    FRAME_OFFSET,
-  );
+  addRectOnEdge(positions, indices, edge, left - frameWidth, left, bottom - frameHeight, top + frameHeight, FRAME_OFFSET);
+  addRectOnEdge(positions, indices, edge, right, right + frameWidth, bottom - frameHeight, top + frameHeight, FRAME_OFFSET);
+  addRectOnEdge(positions, indices, edge, left, right, bottom - frameHeight, bottom, FRAME_OFFSET);
+  addRectOnEdge(positions, indices, edge, left, right, top, top + frameHeight, FRAME_OFFSET);
 }
 
 function disposeGroup(group: THREE.Group): void {
   group.traverse((object) => {
-    if (object instanceof THREE.Mesh) {
-      object.geometry.dispose();
-    }
+    if (object instanceof THREE.Mesh) object.geometry.dispose();
   });
   group.clear();
 }
@@ -222,9 +189,9 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
 
   private map?: MapLibreMap;
   private renderer?: THREE.WebGLRenderer;
-  private camera = new THREE.Camera();
-  private scene = new THREE.Scene();
-  private detailGroup = new THREE.Group();
+  private readonly camera = new THREE.Camera();
+  private readonly scene = new THREE.Scene();
+  private readonly detailGroup = new THREE.Group();
   private origin?: MercatorCoordinate;
   private meterScale = 1;
 
@@ -234,17 +201,14 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
     transparent: true,
     opacity: 0.9,
   });
-
   private readonly frameMaterial = new THREE.MeshBasicMaterial({
     color: 0xd5d0c7,
     side: THREE.DoubleSide,
   });
-
   private readonly doorMaterial = new THREE.MeshBasicMaterial({
     color: 0x25323a,
     side: THREE.DoubleSide,
   });
-
   private readonly roofMaterial = new THREE.MeshBasicMaterial({
     color: 0x5f625f,
     side: THREE.DoubleSide,
@@ -254,29 +218,23 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
     this.scene.add(this.detailGroup);
   }
 
-  onAdd(map: MapLibreMap, gl: WebGLRenderingContext | WebGL2RenderingContext): void {
+  onAdd(map: MapLibreMap, gl: WebGL2RenderingContext): void {
     this.map = map;
-    this.renderer = new THREE.WebGLRenderer({
-      canvas: map.getCanvas(),
-      context: gl,
-    });
+    this.renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl });
     this.renderer.autoClear = false;
   }
 
-  render(
-    _gl: WebGLRenderingContext | WebGL2RenderingContext,
-    options: CustomRenderMethodInput,
-  ): void {
+  render(_gl: WebGL2RenderingContext, options: CustomRenderMethodInput): void {
     if (!this.renderer || !this.origin || this.detailGroup.children.length === 0) return;
 
-    const projection = new THREE.Matrix4().fromArray(
-      Array.from(options.defaultProjectionData.projectionMatrix),
+    const worldToClip = new THREE.Matrix4().fromArray(
+      Array.from(options.modelViewProjectionMatrix),
     );
-    const model = new THREE.Matrix4()
+    const localMetersToWorld = new THREE.Matrix4()
       .makeTranslation(this.origin.x, this.origin.y, this.origin.z)
       .scale(new THREE.Vector3(this.meterScale, this.meterScale, this.meterScale));
 
-    this.camera.projectionMatrix = projection.multiply(model);
+    this.camera.projectionMatrix = worldToClip.multiply(localMetersToWorld);
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
   }
@@ -334,37 +292,18 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
     const doorIndices: number[] = [];
     const area = signedArea(points);
 
-    let longestEdge = -1;
-    let longestLength = 0;
+    let entranceEdge: EdgeBasis | null = null;
 
     for (let edgeIndex = 0; edgeIndex < points.length; edgeIndex += 1) {
-      const start = points[edgeIndex];
-      const end = points[(edgeIndex + 1) % points.length];
-      const dx = end.x - start.x;
-      const dy = end.y - start.y;
-      const length = Math.hypot(dx, dy);
-      if (length < 1.8) continue;
-      if (length > longestLength) {
-        longestLength = length;
-        longestEdge = edgeIndex;
-      }
+      const edge = edgeBasis(points, edgeIndex, area);
+      if (!edge || edge.length < 1.8) continue;
+      if (!entranceEdge || edge.length > entranceEdge.length) entranceEdge = edge;
 
-      const unit = { x: dx / length, y: dy / length };
-      const outward =
-        area >= 0
-          ? { x: unit.y, y: -unit.x }
-          : { x: -unit.y, y: unit.x };
-      const bayCount = Math.max(1, Math.min(MAX_BAYS_PER_EDGE, Math.floor(length / 3)));
-      const bayWidth = length / bayCount;
+      const bayCount = Math.max(1, Math.min(MAX_BAYS_PER_EDGE, Math.floor(edge.length / 3)));
+      const bayWidth = edge.length / bayCount;
       const windowWidth = Math.min(1.9, bayWidth * 0.62);
-      const floorCount = Math.max(
-        1,
-        Math.min(MAX_FACADE_FLOORS, profile.estimatedLevels - 1),
-      );
-      const facadeBottom = Math.min(
-        profile.height - 0.8,
-        profile.minHeight + GROUND_DETAIL_HEIGHT,
-      );
+      const floorCount = Math.max(1, Math.min(MAX_FACADE_FLOORS, profile.estimatedLevels - 1));
+      const facadeBottom = Math.min(profile.height - 0.8, profile.minHeight + GROUND_DETAIL_HEIGHT);
       const facadeHeight = Math.max(0, profile.height - facadeBottom - 0.7);
       if (facadeHeight <= 0.8) continue;
       const floorSpacing = facadeHeight / floorCount;
@@ -378,54 +317,21 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
           const centerAlong = (bay + 0.5) * bayWidth;
           const left = centerAlong - windowWidth / 2;
           const right = centerAlong + windowWidth / 2;
-          addRectOnEdge(
-            panePositions,
-            paneIndices,
-            start,
-            unit,
-            outward,
-            left,
-            right,
-            bottom,
-            top,
-            WINDOW_OFFSET,
-          );
-          addWindowFrame(
-            framePositions,
-            frameIndices,
-            start,
-            unit,
-            outward,
-            left,
-            right,
-            bottom,
-            top,
-          );
+          addRectOnEdge(panePositions, paneIndices, edge, left, right, bottom, top, WINDOW_OFFSET);
+          addWindowFrame(framePositions, frameIndices, edge, left, right, bottom, top);
         }
       }
     }
 
-    if (longestEdge >= 0) {
-      const start = points[longestEdge];
-      const end = points[(longestEdge + 1) % points.length];
-      const dx = end.x - start.x;
-      const dy = end.y - start.y;
-      const length = Math.hypot(dx, dy);
-      const unit = { x: dx / length, y: dy / length };
-      const outward =
-        area >= 0
-          ? { x: unit.y, y: -unit.x }
-          : { x: -unit.y, y: unit.x };
-      const width = Math.min(2.2, Math.max(1.2, length * 0.18));
-      const centerAlong = length / 2;
+    if (entranceEdge) {
+      const width = Math.min(2.2, Math.max(1.2, entranceEdge.length * 0.18));
+      const centerAlong = entranceEdge.length / 2;
       const bottom = profile.minHeight;
       const top = Math.min(profile.height - 0.3, bottom + 2.8);
       addRectOnEdge(
         doorPositions,
         doorIndices,
-        start,
-        unit,
-        outward,
+        entranceEdge,
         centerAlong - width / 2,
         centerAlong + width / 2,
         bottom,
@@ -435,33 +341,18 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
     }
 
     if (panePositions.length > 0) {
-      this.detailGroup.add(
-        new THREE.Mesh(
-          geometryFromBuffers(panePositions, paneIndices),
-          this.paneMaterial,
-        ),
-      );
+      this.detailGroup.add(new THREE.Mesh(geometryFromBuffers(panePositions, paneIndices), this.paneMaterial));
     }
     if (framePositions.length > 0) {
-      this.detailGroup.add(
-        new THREE.Mesh(
-          geometryFromBuffers(framePositions, frameIndices),
-          this.frameMaterial,
-        ),
-      );
+      this.detailGroup.add(new THREE.Mesh(geometryFromBuffers(framePositions, frameIndices), this.frameMaterial));
     }
     if (doorPositions.length > 0) {
-      this.detailGroup.add(
-        new THREE.Mesh(
-          geometryFromBuffers(doorPositions, doorIndices),
-          this.doorMaterial,
-        ),
-      );
+      this.detailGroup.add(new THREE.Mesh(geometryFromBuffers(doorPositions, doorIndices), this.doorMaterial));
     }
   }
 
   private buildRoof(points: Point2[], profile: BuildingProfile): void {
-    const roofBase = profile.height + FLAT_ROOF_OFFSET;
+    const roofBase = profile.height + ROOF_BASE_OFFSET;
     const canUseHipRoof =
       profile.height < 24 && points.length >= 3 && points.length <= 10 && isConvex(points);
 
@@ -484,41 +375,32 @@ export class SelectedBuildingLayer implements CustomLayerInterface {
           { ...center, z: roofBase + rise },
         );
       }
-      this.detailGroup.add(
-        new THREE.Mesh(geometryFromBuffers(positions, indices), this.roofMaterial),
-      );
+      this.detailGroup.add(new THREE.Mesh(geometryFromBuffers(positions, indices), this.roofMaterial));
       return;
     }
 
     const shape = new THREE.Shape();
     shape.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) {
-      shape.lineTo(points[i].x, points[i].y);
-    }
+    for (let i = 1; i < points.length; i += 1) shape.lineTo(points[i].x, points[i].y);
     shape.closePath();
     const roofGeometry = new THREE.ShapeGeometry(shape);
     roofGeometry.translate(0, 0, roofBase + 0.12);
     this.detailGroup.add(new THREE.Mesh(roofGeometry, this.roofMaterial));
 
-    const parapetPositions: number[] = [];
-    const parapetIndices: number[] = [];
+    const positions: number[] = [];
+    const indices: number[] = [];
     for (let i = 0; i < points.length; i += 1) {
       const a = points[i];
       const b = points[(i + 1) % points.length];
       pushQuad(
-        parapetPositions,
-        parapetIndices,
+        positions,
+        indices,
         { ...a, z: roofBase },
         { ...b, z: roofBase },
         { ...b, z: roofBase + 0.45 },
         { ...a, z: roofBase + 0.45 },
       );
     }
-    this.detailGroup.add(
-      new THREE.Mesh(
-        geometryFromBuffers(parapetPositions, parapetIndices),
-        this.roofMaterial,
-      ),
-    );
+    this.detailGroup.add(new THREE.Mesh(geometryFromBuffers(positions, indices), this.roofMaterial));
   }
 }
