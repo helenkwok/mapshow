@@ -53,7 +53,7 @@ final class RoadTagNormalizer {
     boolean tunnel = flag(tags, "tunnel");
     int layer = integer(tags, "layer") == null ? 0 : integer(tags, "layer");
 
-    out.put("schema_version", 1);
+    out.put("schema_version", 2);
     out.put("osm_id", osmId);
     out.put("highway", highway);
     out.put("road_class", roadClass);
@@ -139,20 +139,38 @@ final class RoadTagNormalizer {
   private static int oneway(Map<String, Object> tags, String highway) {
     String raw = string(tags, "oneway");
     if (raw != null) {
-      return switch (raw) {
-        case "-1", "reverse" -> -1;
-        case "yes", "true", "1" -> 1;
-        case "no", "false", "0" -> 0;
-        default -> 0;
-      };
+      raw = raw.toLowerCase(Locale.ROOT);
+      if (raw.equals("-1") || raw.equals("reverse")) return -1;
+      if (isTruthy(raw)) return 1;
+      if (raw.equals("no") || raw.equals("0") || raw.equals("false")) return 0;
     }
     String junction = string(tags, "junction");
-    if ("roundabout".equals(junction) || "motorway".equals(roadClass(highway))) return 1;
+    if ("roundabout".equals(junction)) return 1;
+    if ("motorway".equals(highway) || "motorway_link".equals(highway)) return 1;
     return 0;
   }
 
-  private static String roadClass(String highway) {
-    return highway.endsWith("_link") ? highway.substring(0, highway.length() - 5) : highway;
+  private static double estimatedWidthMeters(String roadClass, Integer lanes) {
+    if (lanes != null && lanes > 0) return Math.max(2.8, lanes * laneWidth(roadClass));
+    return switch (roadClass) {
+      case "motorway", "trunk" -> 7.4;
+      case "primary", "secondary" -> 6.8;
+      case "tertiary", "unclassified", "residential" -> 6.0;
+      case "living_street", "service" -> 4.5;
+      case "track" -> 3.2;
+      case "raceway" -> 8.0;
+      case "busway" -> 3.5;
+      default -> 5.5;
+    };
+  }
+
+  private static double laneWidth(String roadClass) {
+    return switch (roadClass) {
+      case "motorway", "trunk", "raceway" -> 3.6;
+      case "primary", "secondary" -> 3.4;
+      case "track" -> 3.0;
+      default -> 3.2;
+    };
   }
 
   private static int classPriority(String roadClass) {
@@ -162,54 +180,39 @@ final class RoadTagNormalizer {
       case "primary" -> 7;
       case "secondary" -> 6;
       case "tertiary" -> 5;
-      case "raceway" -> 5;
-      case "unclassified", "residential", "busway" -> 4;
-      case "living_street" -> 3;
+      case "unclassified", "residential" -> 4;
+      case "living_street", "busway" -> 3;
       case "service", "road" -> 2;
       case "track" -> 1;
+      case "raceway" -> 5;
       default -> 0;
     };
   }
 
-  private static double estimatedWidthMeters(String roadClass, Integer lanes) {
-    if (lanes != null && lanes > 0) return Math.max(3.2, lanes * 3.2);
-    return switch (roadClass) {
-      case "motorway" -> 7.2;
-      case "trunk", "primary" -> 6.8;
-      case "secondary" -> 6.5;
-      case "tertiary" -> 6.2;
-      case "unclassified", "residential", "busway" -> 5.5;
-      case "living_street" -> 4.8;
-      case "service", "road" -> 4.0;
-      case "track" -> 3.2;
-      case "raceway" -> 8.0;
-      default -> 5.0;
-    };
+  private static String roadClass(String highway) {
+    return highway.endsWith("_link") ? highway.substring(0, highway.length() - 5) : highway;
   }
 
   private static String surfaceClass(String surface) {
     if (surface == null) return "unknown";
-    if (PAVED_SURFACES.contains(surface)) return "paved";
-    if (UNPAVED_SURFACES.contains(surface)) return "unpaved";
+    String normalized = surface.toLowerCase(Locale.ROOT);
+    if (PAVED_SURFACES.contains(normalized)) return "paved";
+    if (UNPAVED_SURFACES.contains(normalized)) return "unpaved";
     return "unknown";
   }
 
   private static boolean flag(Map<String, Object> tags, String key) {
     String value = string(tags, key);
-    return value != null && !Set.of("no", "false", "0").contains(value);
-  }
-
-  private static boolean isTruthy(String value) {
-    return value != null && Set.of("yes", "true", "1").contains(value);
+    return value != null && !value.equalsIgnoreCase("no") && !value.equals("0") && !value.equalsIgnoreCase("false");
   }
 
   private static Integer integer(Map<String, Object> tags, String key) {
     Object value = tags.get(key);
     if (value == null) return null;
-    String raw = value.toString().trim();
-    if (!raw.matches("[-+]?[0-9]+")) return null;
+    Matcher matcher = NUMBER.matcher(value.toString());
+    if (!matcher.find()) return null;
     try {
-      return Integer.parseInt(raw);
+      return (int) Math.round(Double.parseDouble(matcher.group()));
     } catch (NumberFormatException ignored) {
       return null;
     }
@@ -218,18 +221,22 @@ final class RoadTagNormalizer {
   private static String string(Map<String, Object> tags, String key) {
     Object value = tags.get(key);
     if (value == null) return null;
-    String result = value.toString().trim().toLowerCase(Locale.ROOT);
-    return result.isEmpty() ? null : result;
+    String string = value.toString().trim();
+    return string.isEmpty() ? null : string;
   }
 
-  private static void copyString(Map<String, Object> tags, Map<String, Object> out, String key) {
-    Object value = tags.get(key);
-    if (value != null && !value.toString().isBlank()) out.put(key, value.toString());
+  private static boolean isTruthy(String value) {
+    return value != null && (value.equalsIgnoreCase("yes") || value.equalsIgnoreCase("true") || value.equals("1"));
   }
 
-  private static void copyRaw(Map<String, Object> tags, Map<String, Object> out, String input, String output) {
-    Object value = tags.get(input);
-    if (value != null && !value.toString().isBlank()) out.put(output, value.toString());
+  private static void copyString(Map<String, Object> input, Map<String, Object> output, String key) {
+    String value = string(input, key);
+    if (value != null) output.put(key, value);
+  }
+
+  private static void copyRaw(Map<String, Object> input, Map<String, Object> output, String sourceKey, String outputKey) {
+    Object value = input.get(sourceKey);
+    if (value != null) output.put(outputKey, value.toString());
   }
 
   private static double round1(double value) {
