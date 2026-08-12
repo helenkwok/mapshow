@@ -20,8 +20,12 @@ OpenFreeMap combines OpenStreetMap-derived tiles with OpenMapTiles schema/styles
 
 MapLibre GL JS is used as the browser vector-map renderer and is distributed under the BSD 3-Clause licence.
 
+## Three.js
+
+Three.js is used by Mapshow's close-range LOD3 custom map layer for generated window, entrance and roof geometry. Three.js is distributed under the MIT licence. Mapshow does not bundle third-party building models or textures with this layer; its current LOD3 geometry is generated from map data at runtime.
+
 ## MGame and Hop.Earth
 
-MGame and Hop.Earth are research/architectural references for this project. No source code, textures, models, or other assets from those projects are included in the initial Mapshow implementation.
+MGame and Hop.Earth are research/architectural references for this project. No source code, textures, models, or other assets from those projects are included in the Mapshow implementation.
 
 Any future reuse of third-party code or assets must be reviewed separately for licence compatibility before it is committed.
