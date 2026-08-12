@@ -1,7 +1,11 @@
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./styles.css";
-import { ensureBuildingExtrusions, setBuildingExtrusionsVisible } from "./map/buildings";
+import {
+  installProceduralBuildings,
+  setBuildingLayersVisible,
+} from "./map/buildings";
+import { buildingProfileFromProperties } from "./map/building-profile";
 import { DEFAULT_PRESET, PRESETS } from "./map/presets";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
@@ -38,6 +42,7 @@ map.addControl(
 
 let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
+let buildingMode: "procedural" | "style" | "none" = "none";
 
 function updateBuildingButton(): void {
   buildingsToggle.setAttribute("aria-pressed", String(buildingsVisible));
@@ -45,13 +50,19 @@ function updateBuildingButton(): void {
 }
 
 function installBuildingLayers(): void {
-  buildingLayerIds = ensureBuildingExtrusions(map);
-  setBuildingExtrusionsVisible(map, buildingLayerIds, buildingsVisible);
+  const installation = installProceduralBuildings(map);
+  buildingLayerIds = installation.layerIds;
+  buildingMode = installation.mode;
+  setBuildingLayersVisible(map, buildingLayerIds, buildingsVisible);
 
-  status.textContent =
-    buildingLayerIds.length > 0
-      ? `OpenFreeMap loaded · ${buildingLayerIds.length} 3D building layer${buildingLayerIds.length === 1 ? "" : "s"}`
-      : "OpenFreeMap loaded · no building layer found at this zoom/style";
+  if (buildingMode === "procedural") {
+    status.textContent =
+      "OpenFreeMap loaded · procedural façades enabled (LOD massing → textured close detail)";
+  } else if (buildingMode === "style") {
+    status.textContent = "OpenFreeMap loaded · using style-provided 3D buildings";
+  } else {
+    status.textContent = "OpenFreeMap loaded · no building layer found in this style";
+  }
 }
 
 map.on("load", installBuildingLayers);
@@ -63,7 +74,7 @@ map.on("error", (event) => {
 
 buildingsToggle.addEventListener("click", () => {
   buildingsVisible = !buildingsVisible;
-  setBuildingExtrusionsVisible(map, buildingLayerIds, buildingsVisible);
+  setBuildingLayersVisible(map, buildingLayerIds, buildingsVisible);
   updateBuildingButton();
 });
 
@@ -96,7 +107,8 @@ presetButtons.addEventListener("click", (event) => {
 
 map.on("moveend", () => {
   const center = map.getCenter();
-  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${map.getZoom().toFixed(1)}`;
+  const detail = map.getZoom() >= 15.3 && buildingMode === "procedural" ? " · façade LOD" : "";
+  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${map.getZoom().toFixed(1)}${detail}`;
 });
 
 map.on("click", (event) => {
@@ -109,7 +121,8 @@ map.on("click", (event) => {
     return;
   }
 
-  const properties = building.properties ?? {};
+  const properties = (building.properties ?? {}) as Record<string, unknown>;
+  const profile = buildingProfileFromProperties(properties);
   const usefulProperties = Object.fromEntries(
     [
       "name",
@@ -123,10 +136,19 @@ map.on("click", (event) => {
       .map((key) => [key, properties[key]]),
   );
 
-  featureInfo.textContent =
-    Object.keys(usefulProperties).length > 0
-      ? JSON.stringify(usefulProperties, null, 2)
-      : "Building geometry is present, but this tile exposes none of the inspected properties.";
+  featureInfo.textContent = JSON.stringify(
+    {
+      mapshow: {
+        facade: profile.facade,
+        height: `${profile.height.toFixed(1)} m`,
+        minHeight: `${profile.minHeight.toFixed(1)} m`,
+        estimatedLevels: profile.estimatedLevels,
+      },
+      source: usefulProperties,
+    },
+    null,
+    2,
+  );
 });
 
 updateBuildingButton();
