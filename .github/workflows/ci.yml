@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  web-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,3 +25,19 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  road-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Compile and test game-road generator
+        run: mvn -B -f road-schema/pom.xml verify
