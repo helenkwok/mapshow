@@ -8,7 +8,7 @@ The project deliberately separates **map delivery** from **game/world generation
 - [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) renders the global map in the browser.
 - Mapshow discovers the OpenMapTiles `building` layer and progressively enriches it instead of treating the source style's extrusion as the final building representation.
 - Three.js is used only for close-range game/world geometry that MapLibre's normal style layers are not intended to generate.
-- Game-road geometry, DEM terrain, collision and world streaming remain separate layers of the architecture.
+- Game-road geometry, DEM terrain, collision and broader world streaming remain separate layers of the architecture.
 
 This repository does **not** contain source code or assets copied from MGame or Hop.Earth. Those projects are architectural references for features we can implement independently.
 
@@ -40,27 +40,29 @@ The prototype provides:
 - separate ground/storefront, façade-body and roof-cap bands;
 - generated brick, masonry and glass façade/window patterns;
 - height-based deterministic façade-family selection;
-- **LOD3 selected-building geometry** generated from the real vector-tile footprint;
-- batched Three.js window panes and window frames on each usable façade edge;
-- a generated entrance on the longest façade edge;
-- generated hipped roofs for simple convex low-rise footprints;
+- **automatic multi-building LOD3 geometry** generated from real vector-tile footprints;
+- batched Three.js window panes and frames on usable façade edges;
+- generated entrances and roof geometry;
+- hipped roofs for simple convex low-rise footprints;
 - flat-roof + parapet geometry as the general fallback;
-- building visibility control;
-- building-property and derived-profile inspection;
+- nearest-first LOD3 selection within a bounded camera radius;
+- cached building groups that survive unchanged refreshes;
+- GPU-buffer disposal when buildings leave the active detail set;
+- building visibility control and feature/profile inspection;
 - presets for Adelaide, Hong Kong, Manhattan, and Tokyo;
 - responsive desktop/mobile controls.
-
-Click a rendered building to enable its LOD3 overlay. LOD3 is intentionally generated only for the selected building in this milestone; this proves the footprint-to-geometry pipeline without generating thousands of close-detail meshes at once.
 
 ## Building LOD strategy
 
 ```text
 LOD1  OpenMapTiles footprint → simple extrusion
 LOD2  footprint + height     → segmented patterned façade
-LOD3  selected footprint     → real window/door/roof geometry in Three.js
+LOD3  nearby footprints      → metric window/door/roof geometry in Three.js
 ```
 
-The LOD3 generator works in a local metric coordinate frame derived from the selected building's Mercator position. The local geometry is transformed back into MapLibre's map coordinate space by a 3D custom layer. This same boundary can later support balconies, richer roof families, apparent interiors, landmark models and distance-based streaming.
+LOD3 currently activates at zoom 16.1 or closer. It considers rendered buildings within 260 m of the camera center, sorts them nearest-first and keeps at most 24 buildings active. Each building is capped at 96 generated windows, with per-edge and floor caps as an additional geometry guardrail.
+
+The LOD3 renderer retains unchanged building groups between refreshes. Buildings that leave the desired set have their `BufferGeometry` disposed immediately; new buildings are generated incrementally. LOD2 therefore remains the visual fallback outside the LOD3 budget rather than allowing dense urban views to create unbounded detail geometry.
 
 ## Architecture direction
 
@@ -87,12 +89,13 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the staged plan.
 
 1. **Map foundation** — OpenFreeMap + MapLibre + basic 3D building extrusion. *(complete)*
 2. **Procedural building LOD2** — façade segmentation, generated window/material patterns, façade families and roof caps. *(complete)*
-3. **Procedural building LOD3 foundation** — selected-building window/door geometry plus hipped/flat roof generation through a Three.js custom layer. *(current)*
-4. **LOD3 streaming/detail** — distance-based multi-building generation, balconies, richer roof generators, apparent interiors and optional custom landmark models.
-5. **Game-road schema** — generate a separate Planetiler profile that retains stable OSM IDs and driving attributes such as `lanes`, `maxspeed`, `width`, `surface`, `smoothness`, `oneway`, `bridge`, `tunnel`, and `layer`.
-6. **DEM terrain** — add a pluggable elevation-tile provider and terrain mesh generation.
-7. **World streaming** — worker-based decoding, tile-edge stitching, LOD, local/floating origin, memory budgets, and near-player collision generation.
-8. **Driving layer** — robust road surfaces, intersections, bridge/tunnel separation and vehicle physics.
+3. **Procedural building LOD3 foundation** — real window/door/roof geometry through a Three.js custom layer. *(complete)*
+4. **LOD3 streaming** — bounded, nearest-first multi-building generation with caching and disposal. *(current)*
+5. **Building detail expansion** — balconies, richer roof families, apparent interiors and optional custom landmark models.
+6. **Game-road schema** — generate a separate Planetiler profile that retains stable OSM IDs and driving attributes such as `lanes`, `maxspeed`, `width`, `surface`, `smoothness`, `oneway`, `bridge`, `tunnel`, and `layer`.
+7. **DEM terrain** — add a pluggable elevation-tile provider and terrain mesh generation.
+8. **World streaming** — worker-based decoding, tile-edge stitching, local/floating origin, memory budgets and near-player collision generation.
+9. **Driving layer** — robust road surfaces, intersections, bridge/tunnel separation and vehicle physics.
 
 ## Data and attribution
 
