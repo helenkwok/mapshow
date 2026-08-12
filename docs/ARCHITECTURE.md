@@ -10,6 +10,7 @@ Mapshow is built as replaceable data and world-generation adapters rather than a
 4. **Generate detail near the viewer.** Expensive geometry and collision are bounded near the camera/player.
 5. **Bound every expensive layer.** Dense cities degrade to cheaper LODs rather than growing GPU allocations without limit.
 6. **Preserve provenance and identity.** OSM feature/node IDs and data licences survive preprocessing wherever the world layer needs traceability.
+7. **Keep policy separate from physical geometry.** Access restrictions, turn legality and traffic rules should not decide whether a physical road exists in the world mesh.
 
 ## Data planes
 
@@ -21,138 +22,65 @@ Mapshow is built as replaceable data and world-generation adapters rather than a
                  │                       │
                  │ visual               │ simulation
                  ▼                       ▼
-          MapLibre basemap        local directed graph
+          MapLibre basemap        local road graph
                  │                       │
-                 ├──────────────┐        ▼
-                 │              │   carriageway meshes
-AWS/Tilezen DEM ─┤              │        │
-                 ▼              ▼        ▼
-          MapLibre terrain   building LODs / road surfaces
-                        \       /         /
-                         \     /         /
-                          local world layer
-                                 │
-                           Three.js/physics
+AWS/Tilezen DEM ─┤                       ├─ lane network
+                 ▼                       ├─ road profiles
+          MapLibre terrain               └─ intersections
+                 │                             │
+                 ├───────────────┐             ▼
+                 ▼               ▼       road surfaces
+             building LODs      local Three.js world
+                                         │
+                                  collision / physics
 ```
 
 The visual and simulation road products are intentionally independent. A future visual-style change must not modify driving geometry, and a road-physics schema change must not require rebuilding OpenFreeMap.
 
-## Terrain
+## Terrain and buildings
 
-`src/map/terrain.ts` owns the elevation-provider boundary. The first provider is the public AWS Open Data `elevation-tiles-prod` Terrarium dataset. MapLibre decodes the raster DEM, renders terrain/hillshade, and exposes `queryTerrainElevation()`.
+`src/map/terrain.ts` owns the elevation-provider boundary. The current provider is the AWS Open Data `elevation-tiles-prod` Terrarium dataset. MapLibre renders the terrain and exposes `queryTerrainElevation()` for custom world geometry.
 
-Custom Three.js building geometry samples DEM elevation and anchors its Mercator origin to ground Z. Road surfaces also sample the same DEM so both detail systems share the map's terrain datum.
-
-The provider boundary can later be backed by Copernicus GLO-30 or higher-resolution regional LiDAR/DTM sources without changing building or road contracts.
-
-## Building LODs
-
-OpenMapTiles building features feed three progressively more expensive representations:
-
-```text
-footprint + tags
-      │
-      ├─ LOD1: simple MapLibre massing
-      ├─ LOD2: segmented patterned façade
-      └─ LOD3: bounded Three.js geometry
-             ├─ windows + frames
-             ├─ entrance
-             └─ generated roof
-```
-
-Current LOD3 budget:
-
-```text
-minimum zoom              16.1
-camera detail radius      260 m
-maximum active buildings  24
-maximum windows/building  96
-maximum bays/edge          8
-maximum detailed floors   10
-```
-
-`src/map/building-feature.ts` extracts/deduplicates real vector-tile footprints and carries sampled terrain height. `src/map/building-detail-layer.ts` owns Three.js geometry, keyed caching, terrain anchoring and disposal. `src/main.ts` owns streaming policy.
+Building LOD3 uses bounded Three.js geometry anchored to sampled DEM height. The current building budget is 24 buildings within 260 m at close zoom, with explicit geometry caps and disposal.
 
 ## Game-road preprocessing — schema v2
 
-`road-schema/` is the simulation-road preprocessing boundary. It uses Planetiler v0.10.2 with Java 21 and emits `game_road` MVT from zoom 12 through 16.
+`road-schema/` uses Planetiler v0.10.2 / Java 21 to emit `game_road` MVT at zoom 12–16.
 
-The key change in schema v2 is **source-side intersection splitting**. `MapshowRoadProfile.splitOsmWayAtIntersections()` opts supported road ways into Planetiler's OSM-way splitter and `FeatureCollector.splitLine()` emits the resulting pieces.
+`MapshowRoadProfile.splitOsmWayAtIntersections()` and `FeatureCollector.splitLine()` split supported OSM roads at real shared OSM nodes before tiling. Each result retains:
 
-```text
-OSM way
- A ─── B ─── C ─── D
-           │
-           └── another road
-               │
-               ▼
-Planetiler shared-node split
- A ─── B ─── C    C ─── D
-        segment 1   segment 2
-```
+- `segment_id`: topology-segment identity;
+- `osm_id`: parent OSM way identity;
+- `first_node` / `last_node`;
+- total and directional lane tags;
+- tagged speeds and `width_m` with provenance;
+- surface/ride metadata;
+- access/vehicle restrictions;
+- `oneway`;
+- bridge/tunnel/layer metadata.
 
-Each output feature therefore has:
-
-- `segment_id`: unique intersection-to-intersection segment identity;
-- `osm_id`: stable parent OSM way identity;
-- `first_node` / `last_node`: OSM node IDs at the segment endpoints;
-- `node_count`: retained source vertices inside the segment;
-- driving dimensions/properties and vertical-separation tags.
-
-Distinct OSM ways are not post-merged. Geometric crossings without a shared OSM node do not become graph junctions merely because their lines cross in 2D.
-
-### Road contract
-
-The versioned machine-readable contract is `road-schema/schema.json`.
-
-**Identity/topology**
-
-- `schema_version = 2`
-- `segment_id`
-- `osm_id`
-- `first_node`, `last_node`, `node_count`
-
-**Classification/dimensions**
-
-- `highway`, `road_class`, `is_link`
-- raw and parsed lane counts
-- `width_raw`, `width_m`, `width_source`
-- raw and parsed tagged speeds
-
-**Driving/ride properties**
-
-- `surface`, `surface_class`, `smoothness`, `tracktype`
-- `oneway`
-- `access`, `vehicle`, `motor_vehicle`
-- `service`, `junction`
-
-**Vertical separation**
-
-- `bridge`
-- `tunnel`
-- `layer`
-- `z_order` convenience hint
-
-Raw OSM fields are retained beside normalized fields. `speed_kmh` is emitted only for a parseable tagged maxspeed; jurisdiction-specific defaults are not invented. `width_m` may be estimated, with `width_source` recording explicit tag, lane-derived, or class fallback provenance.
+Distinct OSM ways are never merged as a preprocessing shortcut. A geometric 2D crossing does not become a graph connection without shared OSM topology.
 
 ## Browser road-world assembly
 
-`src/map/game-roads.ts` validates schema v2 and provides the independent TileJSON adapter. `src/map/road-world.ts` converts loaded vector-source features into a bounded local road world.
+`src/map/game-roads.ts` validates schema v2. `src/map/road-world.ts` converts loaded source features into a bounded local topology world.
 
 ```text
-loaded game_road source features
-             │
-             ├─ group by segment_id
-             ├─ deduplicate clipped copies
-             ├─ stitch safe overlapping fragments
-             ├─ retain multipart fallback when needed
-             └─ bound by camera distance / segment count
-                         │
-                         ▼
-                 local directed graph
+loaded game_road features
+        │
+        ├─ group by segment_id
+        ├─ remove duplicate clipped appearances
+        ├─ stitch only direction-preserving overlaps
+        ├─ keep multipart fallback when necessary
+        └─ bound by distance / segment count
+                    │
+                    ▼
+            directed road graph
 ```
 
-The graph is keyed by OSM endpoint node IDs. `oneway` determines whether one or two directed arcs are created for each road segment. Access fields remain in the records for later routing/vehicle policy.
+Direction-preserving stitching matters because source first-node → last-node orientation is also the reference direction for `oneway`, directional lane tags and lateral lane placement.
+
+Access/private/no-access fields stay on the physical road records. They are inputs to future routing policy, not a filter that deletes the road mesh.
 
 Current road-world budget:
 
@@ -162,83 +90,116 @@ camera radius             650 m
 maximum active segments   240
 ```
 
-`querySourceFeatures()` can return several clipped appearances of the same source segment as tiles load. Grouping by `segment_id` and overlap-aware stitching prevents those appearances from becoming duplicate graph edges.
+## Reusable road elevation profile
 
-## Driveable road-surface representation
-
-`src/map/road-surface-layer.ts` converts each active graph segment into local metric Three.js geometry.
+`src/map/road-profile.ts` creates the vertical profile reused by rendering now and physics later.
 
 ```text
-centerline + width_m
-        │
-        ├─ densify to <= ~8 m sample spacing
-        ├─ sample terrain Z
-        ├─ derive local tangent / perpendicular
-        ├─ offset +/- width_m / 2
-        └─ triangulate strip
+road centerline
+      │
+      ├─ densify to <= ~8 m spacing
+      ├─ sample DEM
+      ├─ smooth local height noise
+      ├─ constrain grade by road class
+      └─ ease bridge/tunnel offsets near ground connections
+                    │
+                    ▼
+             metric Z profile
+```
+
+Major roads get tighter grade limits than local roads/tracks. Ground roads retain terrain shape rather than becoming globally flat. Bridges and tunnels use stronger smoothing plus an eased transition when their topology endpoint connects to a different vertical mode.
+
+Bridge deck/tunnel floor height is still heuristic because ordinary OSM data rarely provides surveyed vertical geometry. This layer is world-generation geometry, not engineering design data.
+
+## Lane network
+
+`src/map/road-lanes.ts` derives directed logical lanes from each topology segment.
+
+Explicit lane metadata takes precedence:
+
+```text
+lanes + lanes:forward + lanes:backward
                  │
                  ▼
-          carriageway surface
+       directional lane counts
+                 │
+   fallback only when tags are absent
+                 ▼
+        width-based lane inference
 ```
 
-Ground roads use DEM elevation plus a small anti-z-fighting lift. Paved, unpaved and unknown surfaces use separate shared materials. Road geometry is cached per `segment_id`; geometry is disposed when a segment leaves the active set or rebuilt when its sampled terrain fingerprint changes.
+For a one-lane two-way road, two directed logical lanes share one physical center path. Multilane roads get lateral offsets inside `width_m`.
 
-### Junctions
+Traffic side is explicit rather than guessed globally. Presets select the known side for Adelaide, Hong Kong, Manhattan and Tokyo, and the UI allows manual left/right switching elsewhere.
 
-Shared graph nodes with at least two incident active segments receive a bounded junction pad. This closes the visual hole where independent carriageway strips meet.
+The lane network also creates candidate incoming → outgoing connections at graph nodes. These connections classify straight/left/right movements from approach headings and exclude implicit U-turns.
 
-The pad is intentionally a first implementation. It is not a substitute for a proper intersection polygon generated from the incoming carriageway boundaries and turn geometry.
+This is **not final turn legality**. `turn:lanes`, restriction relations, signals and jurisdiction-specific lane rules belong to a later policy layer.
 
-### Bridges and tunnels
+## Intersection geometry
 
-`bridge`, `tunnel`, and `layer` prevent grade-separated roads from collapsing onto the ground surface. The current Z calculation uses provisional minimum bridge clearance / tunnel-depth heuristics because OSM usually lacks surveyed deck or tunnel-floor elevation.
+`src/map/road-intersections.ts` replaces the old circular junction pad.
+
+For each shared graph node it:
+
+1. walks a bounded distance down every active approach;
+2. offsets the approach center by its actual half-width;
+3. collects left/right throat boundaries;
+4. builds a convex junction footprint;
+5. uses nearby road-profile elevations on the approach edge;
+6. anchors the center to the shared graph-node elevation.
+
+This creates a physical intersection shape from road headings and widths rather than an arbitrary radius. It intentionally does not yet model channelized islands, medians, signal stop lines or complex divided junctions.
+
+## Road surface renderer
+
+`src/map/road-surface-layer.ts` consumes the graph, road profiles, lane layouts and intersection polygons.
 
 ```text
-ground road ── DEM sample + small lift
-bridge      ── DEM + provisional clearance/layer offset
-tunnel      ── DEM - provisional depth/layer offset
+road profile + width_m ──> carriageway strips
+lane layout            ──> lane-center guide strips
+shared graph nodes     ──> intersection polygons
 ```
 
-A later refinement stage should use explicit elevation tags where available, smooth grades across approaches, and model decks/portals separately.
+The same smoothed Z profile drives the carriageway and lane guides so they cannot disagree vertically. Road groups carry source IDs, endpoint IDs, lane IDs, width and direction metadata in Three.js `userData` for later collision/vehicle integration.
+
+Geometry remains bounded and cached; stale `BufferGeometry` is disposed when segments leave the local world or a profile/lane configuration changes.
 
 ## Runtime integration
 
-`src/main.ts` owns both building and road streaming policy.
+`src/main.ts` owns streaming policy and world controls. When a dedicated TileJSON is configured it:
 
-When `VITE_GAME_ROADS_TILEJSON` is configured, Mapshow:
+- installs the simulation vector source;
+- builds the local road graph;
+- derives lane topology using the current traffic side;
+- creates smoothed road profiles;
+- streams carriageways/intersections/lane guides;
+- refreshes as the camera or DEM changes;
+- exposes traffic-side and road-surface controls plus runtime counts.
 
-1. installs the independent vector source;
-2. queries loaded `game_road` source features;
-3. builds the bounded local graph;
-4. streams carriageway surfaces into a Three.js custom layer;
-5. refreshes them as the map moves or DEM tiles become available;
-6. exposes a road-surface toggle and runtime graph statistics.
+Without `VITE_GAME_ROADS_TILEJSON`, simulation road surfaces remain disabled. OpenFreeMap roads are never silently promoted to physics geometry.
 
-Without the TileJSON, road surfaces stay disabled. Mapshow does not silently use OpenFreeMap's cartographic roads as simulation geometry.
+## Remaining boundary before vehicle physics
 
-## What is not solved yet
+Implemented now:
 
-The current road layer is topology-aware and visually driveable, but it is not vehicle physics yet. Remaining road/world work includes:
+- real DEM terrain;
+- bounded procedural building LODs;
+- topology-split road MVT;
+- direction-preserving tile-fragment assembly;
+- directed local graph;
+- smoothed/grade-limited road profiles;
+- bridge/tunnel approach easing;
+- approach-shaped intersection polygons;
+- explicit left/right traffic;
+- directed lane centerlines and candidate lane connectivity.
 
-- robust intersection polygons instead of circular junction pads;
-- lane-centerline generation and lane connectivity;
-- grade smoothing and bridge/tunnel approach continuity;
-- OSM turn restrictions and route relation handling;
-- separate simplified collision meshes / physics bodies;
-- player-centric floating origin;
-- worker-based decoding/mesh generation and frame-time budgets;
-- vehicle suspension, tires and control.
+Still separate:
 
-## Near-term acceptance criteria
-
-Before full vehicle physics becomes the focus, Mapshow should be able to:
-
-- render real DEM terrain and terrain-aware custom geometry; *(implemented)*
-- stream bounded LOD3 building geometry with explicit GPU cleanup; *(implemented)*
-- generate a versioned simulation-road MVT tileset from OSM; *(implemented)*
-- split supported roads at real shared OSM junction nodes before tiling; *(implemented)*
-- deduplicate/stitch nearby game-road tile fragments; *(implemented)*
-- construct a directed local graph from OSM endpoint nodes and `oneway`; *(implemented)*
-- distinguish graph junctions from non-connected bridge/tunnel crossings; *(implemented through OSM shared-node topology + vertical tags)*
-- generate bounded, DEM-aligned metric carriageway surfaces; *(implemented foundation)*
-- generate proper intersection/lane geometry and near-player collision bodies; *(next)*
+- `turn:lanes` parsing and OSM restriction relations;
+- legal routing/vehicle access policy;
+- signals and lane-change rules;
+- dedicated simplified collision meshes/physics bodies;
+- player-centric floating origin and worker-based road generation;
+- vehicle suspension, tire forces and controller behavior;
+- higher-resolution regional terrain/road elevation refinement.
