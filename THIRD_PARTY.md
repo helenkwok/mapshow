@@ -4,7 +4,7 @@ Mapshow's source code is licensed under Apache-2.0. Third-party software, map da
 
 ## OpenStreetMap
 
-Map data used through OpenFreeMap is derived from OpenStreetMap. OpenStreetMap data is licensed under the Open Data Commons Open Database License (ODbL). Applications must provide the required OpenStreetMap attribution and must not assume that Mapshow's Apache-2.0 licence applies to the map database.
+Map data used through OpenFreeMap and the `road-schema/` game-road generator is derived from OpenStreetMap. OpenStreetMap data is licensed under the Open Data Commons Open Database License (ODbL). Applications and generated tiles must provide required OpenStreetMap attribution and must not assume that Mapshow's Apache-2.0 licence applies to the map database or derived database rights.
 
 ## OpenFreeMap / OpenMapTiles
 
@@ -15,6 +15,12 @@ https://tiles.openfreemap.org/styles/liberty
 ```
 
 OpenFreeMap combines OpenStreetMap-derived tiles with OpenMapTiles schema/styles and other third-party resources. Their respective attribution and licence requirements continue to apply. The hosted service is an external dependency; production deployments should review its current terms and may choose self-hosted tiles.
+
+## Planetiler
+
+`road-schema/` uses Planetiler to preprocess OpenStreetMap PBF data into the separate `game_road` vector-tile layer. Mapshow currently pins Planetiler **v0.10.2**. Planetiler is distributed under the Apache License 2.0.
+
+Planetiler's software licence is separate from the ODbL obligations on the OpenStreetMap data being processed. Generated game-road tiles remain derived from OSM data and must retain the appropriate OSM attribution/licence treatment.
 
 ## AWS Terrain Tiles / Tilezen / Joerd
 

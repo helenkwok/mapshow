@@ -1,77 +1,66 @@
 # Architecture
 
-Mapshow is being built as a set of replaceable data and world-generation adapters rather than a monolithic map renderer.
+Mapshow is built as replaceable data and world-generation adapters rather than a monolithic map renderer.
 
 ## Principles
 
-1. **Keep global map delivery cheap.** Preprocess OpenStreetMap data into immutable tiles rather than query Overpass for every player movement.
-2. **Do not confuse cartography with simulation.** OpenMapTiles is excellent for visual context but deliberately normalises or omits attributes needed for driving physics.
-3. **Keep terrain independent from vector maps.** Elevation is a separate data product with its own provider interface.
-4. **Generate detail near the viewer.** Expensive building detail and collision should be generated only where it matters.
-5. **Bound every expensive layer.** Dense cities must degrade to cheaper LODs rather than allowing unbounded geometry or GPU allocations.
-6. **Preserve provenance.** Data licences and attribution remain separate from Mapshow's Apache-2.0 code licence.
+1. **Keep global map delivery cheap.** Preprocess OpenStreetMap into immutable tiles rather than query Overpass while the player moves.
+2. **Do not confuse cartography with simulation.** OpenMapTiles is visual context; simulation road data has a separate schema.
+3. **Keep terrain independent from vector maps.** Elevation has its own provider interface.
+4. **Generate detail near the viewer.** Expensive geometry and collision are bounded near the camera/player.
+5. **Bound every expensive layer.** Dense cities degrade to cheaper LODs rather than growing GPU allocations without limit.
+6. **Preserve provenance and identity.** OSM feature IDs and data licences survive preprocessing wherever the world layer needs traceability.
 
-## Visual map, terrain and building pipeline
-
-```text
-OpenFreeMap style + MVT ───────────────┐
-                                       ▼
-                              MapLibre GL JS
-                                       │
-AWS/Tilezen Terrarium DEM ─ raster-dem ┤
-                                       ├─ 3D terrain + hillshade
-                                       ├─ roads / water / land use / labels
-                                       └─ OpenMapTiles building features
-                                                │
-                                                ├─ LOD1 massing
-                                                ├─ LOD2 façade bands/patterns
-                                                └─ LOD3 nearby geometry
-                                                        │
-                                                        ▼
-                                                 Three.js custom layer
-```
-
-`src/map/terrain.ts` owns the elevation provider boundary. The first provider is the public AWS Open Data `elevation-tiles-prod` Terrarium dataset. MapLibre decodes the raster DEM, produces the terrain surface and hillshade, and exposes sampled elevation through `queryTerrainElevation()`.
-
-The provider boundary is intentionally small so the default terrain can later be replaced by a self-hosted Copernicus GLO-30 product, a regional LiDAR/DTM source, or a stitched hierarchy without changing building/road code.
-
-## Terrain-aware custom geometry
-
-MapLibre style layers automatically participate in terrain rendering, but arbitrary Three.js custom geometry does not automatically acquire the ground elevation underneath it. Mapshow therefore explicitly samples DEM elevation for each streamed LOD3 building.
+## Data planes
 
 ```text
-building footprint center
-          │
-          ▼
-queryTerrainElevation()
-          │
-          ▼
-ground elevation (m)
-          │
-          ▼
-MercatorCoordinate.fromLngLat(center, elevation)
-          │
-          ▼
-Three.js group Z origin
+                        OpenStreetMap
+                         /          \
+                        /            \
+             OpenFreeMap MVT      Mapshow game-road MVT
+                 │                       │
+                 │ visual               │ simulation
+                 ▼                       ▼
+          MapLibre basemap       road decoder / graph
+                 │                       │
+                 ├──────────────┐        │
+                 │              │        │
+AWS/Tilezen DEM ─┤              ▼        ▼
+                 │       building LODs  road surfaces
+                 ▼              │        │
+          MapLibre terrain      └───┬────┘
+                                    ▼
+                             local world frame
+                                    │
+                              Three.js/physics
 ```
 
-As terrain tiles finish loading, the LOD3 stream refreshes on map `idle`. Existing building groups keep their geometry buffers but their Mercator Z position is updated when a more complete terrain sample becomes available. Turning terrain off moves custom building detail back to the zero-elevation baseline without rebuilding the façade geometry.
+The visual and simulation road products are intentionally independent. A future switch of visual map style must not change driving geometry, and a change to the road-physics schema must not require rebuilding the visual OpenFreeMap style.
 
-## Building pipeline
+## Terrain
 
-`src/map/buildings.ts` discovers an OpenMapTiles vector source with `source-layer: building`. If it is available, Mapshow hides the style-provided building extrusion and installs its own managed LOD layers. If no usable building source can be found, Mapshow falls back to the style-provided extrusion.
+`src/map/terrain.ts` owns the elevation provider boundary. The first provider is the public AWS Open Data `elevation-tiles-prod` Terrarium dataset. MapLibre decodes the raster DEM, renders terrain/hillshade, and exposes `queryTerrainElevation()`.
 
-LOD2 splits each building vertically into a ground/storefront band, a main façade body and a roof cap. Runtime-generated patterns provide brick, masonry and glass/window treatments without downloading façade imagery.
+Custom Three.js building geometry samples DEM elevation and anchors its Mercator origin to the sampled ground Z. Existing cached building groups can update their terrain Z without rebuilding their façade geometry.
 
-LOD3 is split into three responsibilities:
+The provider boundary can later be backed by Copernicus GLO-30 or higher-resolution regional LiDAR/DTM sources without changing building or road contracts.
 
-- `src/map/building-feature.ts` extracts/deduplicates a real rendered footprint, derives a stable key, computes camera distance and carries sampled ground elevation.
-- `src/map/building-detail-layer.ts` owns Three.js geometry, terrain anchoring, caching and disposal.
-- `src/main.ts` owns the current streaming policy and budgets.
+## Building LODs
 
-## LOD3 streaming policy
+OpenMapTiles building features feed three progressively more expensive representations:
 
-Current policy:
+```text
+footprint + tags
+      │
+      ├─ LOD1: simple MapLibre massing
+      ├─ LOD2: segmented patterned façade
+      └─ LOD3: bounded Three.js geometry
+             ├─ windows + frames
+             ├─ entrance
+             └─ generated roof
+```
+
+Current LOD3 budget:
 
 ```text
 minimum zoom              16.1
@@ -82,84 +71,109 @@ maximum bays/edge          8
 maximum detailed floors   10
 ```
 
-The viewport's rendered `building` features are converted into candidates. Duplicate appearances of the same source/geometry are collapsed by a stable feature key. Candidates outside the metric radius are discarded, the remainder are sorted nearest-first, and only the first 24 are sent to the Three.js layer.
+`src/map/building-feature.ts` extracts/deduplicates real vector-tile footprints and carries sampled terrain height. `src/map/building-detail-layer.ts` owns Three.js geometry, keyed caching, terrain anchoring and disposal. `src/main.ts` owns the current streaming policy.
 
-LOD2 remains visible underneath/outside this budget. A dense Manhattan or Hong Kong view therefore falls back to patterned extrusions instead of trying to generate detailed geometry for every visible building.
+## Game-road tile schema
 
-### Incremental lifecycle
+`road-schema/` is now the simulation-road preprocessing boundary. It uses Planetiler v0.10.2 with Java 21 and emits a dedicated MVT layer named `game_road` from zoom 12 through 16.
 
-`BuildingDetailLayer.setBuildings()` performs a keyed diff. Unchanged building groups stay in the Three.js scene and retain their GPU buffers. Removed groups traverse their meshes and dispose `BufferGeometry` immediately. Existing groups can update terrain Z without recreating their geometry. Shared materials remain owned by the custom layer and are disposed only when the layer itself is removed.
+The profile intentionally does **not** merge distinct OSM ways. Every feature retains the source `osm_id`, source-way endpoint node IDs and node count alongside its line geometry.
 
-## Procedural building geometry
+### Contract
 
-MGame demonstrates a useful design direction: OSM footprints can be the structural input to buildings that are much richer than boxes. Mapshow implements this independently.
+The versioned machine-readable contract is `road-schema/schema.json`. Important groups are:
+
+**Identity/topology**
+
+- `schema_version`
+- `osm_id`
+- `first_node`, `last_node`, `node_count`
+
+**Classification/dimensions**
+
+- `highway`, `road_class`, `is_link`
+- raw and parsed lane counts
+- `width_raw`, `width_m`, `width_source`
+- raw and parsed tagged speeds
+
+**Driving/ride properties**
+
+- `surface`, `surface_class`, `smoothness`, `tracktype`
+- `oneway`
+- `access`, `vehicle`, `motor_vehicle`
+- `service`, `junction`
+
+**Vertical separation**
+
+- `bridge`
+- `tunnel`
+- `layer`
+- `z_order` convenience hint
+
+The generator keeps raw OSM fields alongside normalized fields. `speed_kmh` is emitted only for a parseable tagged maxspeed; jurisdiction-specific legal defaults are not invented. `width_m` may be estimated because a road mesh needs a physical width, and `width_source` records whether it came from an explicit tag, lane count or class fallback.
+
+### Why the zoom range starts at 12
+
+The road tiles are simulation input, not a replacement basemap. Generating only z12–16 keeps source geometry detail high while avoiding a second planet-scale low-zoom cartographic product that Mapshow does not need for driving.
+
+Planetiler simplification is disabled in this profile and a tile buffer is retained so the browser can reconcile road geometry across tile edges before generating local surfaces.
+
+### Browser adapter
+
+`src/map/game-roads.ts` defines the TypeScript representation of `game_road`, validates required properties and can attach an independently hosted TileJSON source with:
 
 ```text
-footprint + tags
-      │
-      ├─ building profile / height inference
-      ├─ LOD1 massing
-      ├─ LOD2 MapLibre façade representation
-      └─ LOD3 Three.js geometry
-           ├─ repeated window bays
-           ├─ separate window panes + frames
-           ├─ generated entrance
-           └─ roof generator
-                ├─ hipped roof for simple convex low-rise footprints
-                └─ flat roof + parapet fallback
+VITE_GAME_ROADS_TILEJSON=<tilejson-url>
+VITE_GAME_ROADS_DEBUG=true   # optional validation overlay only
 ```
 
-Each LOD3 building uses local meter geometry and receives its own Mercator position/scale transform. This keeps vertex coordinates small and establishes the same coordinate boundary later needed by physics and floating-origin world streaming.
+The debug line is not a driveable road surface.
 
-## Game-road tile profile
+### Topology boundary
 
-The next major data layer should be a custom Planetiler profile. Unlike the visual OpenMapTiles transportation layer, it should retain data required to reconstruct topology and driving surfaces:
+The current MVT contract preserves source-way identity, endpoint node IDs and detailed line geometry, but it is not yet a complete routing/physics graph. An OSM way may contain shared intersection nodes internally, not only at its endpoints.
 
-- stable OSM way/node identifiers;
-- `highway` and service class;
-- `lanes` and lane direction hints;
-- `maxspeed`;
-- explicit/derived `width`;
-- `surface` and `smoothness`;
-- `oneway`;
-- `junction`;
-- `bridge`, `tunnel`, `layer`;
-- access restrictions;
-- enough node connectivity information to stitch a graph across tile boundaries.
+The next road stage must therefore:
 
-The output can remain MVT if the schema is carefully defined. Visual tiles and game-road tiles should be independently versioned.
+1. decode a bounded set of nearby `game_road` tiles;
+2. deduplicate features by `osm_id` and clipped geometry;
+3. find/retain internal junctions by geometric intersection and/or a graph sidecar built directly from OSM node references;
+4. split centerlines into graph segments;
+5. stitch segments across MVT tile boundaries;
+6. preserve `bridge`/`tunnel`/`layer` when deciding whether crossings actually intersect;
+7. reconcile ground-road elevations with DEM while keeping bridges/tunnels on independent vertical paths;
+8. generate local metric carriageway and collision meshes.
 
-## Terrain refinement
+This is deliberately separate from routing policy: access restrictions and directional tags are preserved so routing/vehicle rules can be layered on later.
 
-The current AWS Terrain Tiles source is a multi-source global dataset, not a direct Copernicus GLO-30 service. A later terrain pipeline can ingest Copernicus GLO-30 Cloud Optimized GeoTIFFs and higher-resolution regional sources, normalise them into a consistent Terrain-RGB/Terrarium or other browser-friendly representation, and publish them behind the existing provider boundary.
+## Road/terrain interaction
 
-For driving/world simulation the terrain pipeline will eventually need more than visual relief:
+Ground roads cannot simply be draped to every raw DEM sample. The world generator should eventually smooth a road corridor while respecting real hills, then blend the corridor back into terrain. Bridges and tunnels must bypass that ground-drape step and remain on their own vertical layer.
 
-1. stable terrain sampling independent of render state;
-2. road-to-terrain reconciliation;
-3. bridge/tunnel vertical separation;
-4. tile-edge stitching;
-5. collision meshes near the player;
-6. source-resolution metadata so regional high-resolution DEMs can override the global base safely.
+```text
+game_road centerline + width
+          │
+          ├─ ground road ── sample/smooth DEM ── carriageway mesh
+          ├─ bridge ─────── independent deck Z ─ carriageway mesh
+          └─ tunnel ─────── independent path Z ─ hidden/portal geometry
+```
 
-## Three.js/world layer
+## World-streaming direction
 
-MapLibre remains responsible for the geographic map and large-scale visual context. Three.js is used only for game-specific geometry that requires real metric dimensions rather than style-layer decoration.
+MapLibre remains responsible for global geographic context. The game/world layer should operate in a local metric frame with a floating origin shared by terrain, detailed buildings, roads and physics.
 
-The building streamer is intentionally still main-thread and viewport-driven. Future world-streaming work should move expensive candidate preparation/mesh generation toward workers, add frame-time-aware budgets, and eventually use a player/floating-origin coordinate system shared with terrain, roads and physics.
+Expensive decoding/mesh generation should migrate toward workers. Candidate sets and collision geometry must be bounded by distance, tile count and/or frame-time budgets just as building LOD3 is today.
 
 ## Near-term acceptance criteria
 
-Before adding vehicle physics, Mapshow should be able to:
+Before vehicle physics becomes the focus, Mapshow should be able to:
 
-- navigate arbitrary OpenFreeMap-covered locations;
-- identify and inspect buildings from vector tiles;
-- transition from LOD1 massing to LOD2 procedural façades;
-- generate metric LOD3 façade and roof geometry from real building footprints; *(implemented)*
-- automatically stream LOD3 for a bounded set of nearby buildings; *(implemented)*
-- dispose geometry as buildings leave the detail radius; *(implemented)*
-- ingest and render a real DEM tile provider; *(implemented)*
-- anchor custom LOD3 geometry to sampled DEM elevation; *(implemented)*
-- display game-road geometry correctly across tile boundaries;
-- distinguish ground roads, bridges and tunnels;
-- move expensive world-generation work off the main thread where practical.
+- render real DEM terrain and terrain-aware custom geometry; *(implemented)*
+- stream bounded LOD3 building geometry with explicit GPU cleanup; *(implemented)*
+- generate a versioned simulation-road MVT tileset from OSM; *(implemented)*
+- retain source road identity, dimensions, access, direction and vertical-layer metadata; *(implemented)*
+- attach a separately hosted game-road TileJSON source in the browser; *(implemented adapter)*
+- stitch nearby road geometry across tile edges;
+- construct intersection-aware local road graph segments;
+- distinguish true intersections from bridge/tunnel crossings;
+- generate terrain-reconciled road surfaces and near-player collision geometry.
