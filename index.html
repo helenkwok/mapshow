@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Mapshow — an open-data 3D world and mapping laboratory." />
+    <title>Mapshow</title>
+  </head>
+  <body>
+    <main id="app">
+      <div id="map" aria-label="Interactive open-data map"></div>
+
+      <section class="panel" aria-label="Map controls">
+        <header class="brand">
+          <span class="eyebrow">OPEN WORLD MAP LAB</span>
+          <h1>mapshow</h1>
+          <p>OpenStreetMap-derived vector data rendered as a lightweight 3D world.</p>
+        </header>
+
+        <div class="control-group">
+          <span class="control-label">Jump to</span>
+          <div class="button-grid" id="preset-buttons">
+            <button type="button" data-preset="adelaide">Adelaide</button>
+            <button type="button" data-preset="hong-kong">Hong Kong</button>
+            <button type="button" data-preset="manhattan">Manhattan</button>
+            <button type="button" data-preset="tokyo">Tokyo</button>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <button type="button" id="buildings-toggle" aria-pressed="true">3D buildings: on</button>
+          <button type="button" id="reset-view">Reset view</button>
+        </div>
+
+        <div class="status-card">
+          <span class="control-label">Selected building</span>
+          <div id="feature-info">Click a building to inspect the vector-tile properties available to the renderer.</div>
+        </div>
+
+        <div class="status-line" id="status" role="status">Loading OpenFreeMap…</div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
