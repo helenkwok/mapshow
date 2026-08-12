@@ -9,6 +9,7 @@ export interface BuildingCandidate {
   profile: BuildingProfile;
   center: LngLatTuple;
   distanceMeters: number;
+  groundElevationMeters: number;
 }
 
 function isLngLatTuple(value: unknown): value is LngLatTuple {
@@ -125,5 +126,6 @@ export function candidateFromFeature(
     profile: buildingProfileFromProperties(properties),
     center,
     distanceMeters: distanceMeters(cameraCenter, center),
+    groundElevationMeters: 0,
   };
 }

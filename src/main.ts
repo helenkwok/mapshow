@@ -13,11 +13,18 @@ import {
 } from "./map/building-feature";
 import { BuildingDetailLayer } from "./map/building-detail-layer";
 import { DEFAULT_PRESET, PRESETS } from "./map/presets";
+import {
+  AWS_TERRARIUM_PROVIDER,
+  installTerrain,
+  setTerrainEnabled,
+  terrainElevationAt,
+} from "./map/terrain";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const LOD3_MIN_ZOOM = 16.1;
 const LOD3_RADIUS_METERS = 260;
 const LOD3_MAX_BUILDINGS = 24;
+const TERRAIN_EXAGGERATION = 1;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -30,6 +37,7 @@ function requiredElement<T extends Element>(selector: string): T {
 const status = requiredElement<HTMLDivElement>("#status");
 const featureInfo = requiredElement<HTMLDivElement>("#feature-info");
 const buildingsToggle = requiredElement<HTMLButtonElement>("#buildings-toggle");
+const terrainToggle = requiredElement<HTMLButtonElement>("#terrain-toggle");
 const resetView = requiredElement<HTMLButtonElement>("#reset-view");
 const presetButtons = requiredElement<HTMLDivElement>("#preset-buttons");
 
@@ -53,12 +61,23 @@ map.addControl(
 const buildingDetailLayer = new BuildingDetailLayer();
 let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
+let terrainEnabled = true;
 let buildingMode: "procedural" | "style" | "none" = "none";
 let lastLod3Candidates = 0;
 
 function updateBuildingButton(): void {
   buildingsToggle.setAttribute("aria-pressed", String(buildingsVisible));
   buildingsToggle.textContent = `3D buildings: ${buildingsVisible ? "on" : "off"}`;
+}
+
+function updateTerrainButton(): void {
+  terrainToggle.setAttribute("aria-pressed", String(terrainEnabled));
+  terrainToggle.textContent = `Terrain: ${terrainEnabled ? "on" : "off"}`;
+}
+
+function installWorldTerrain(): void {
+  installTerrain(map, AWS_TERRARIUM_PROVIDER);
+  setTerrainEnabled(map, terrainEnabled, TERRAIN_EXAGGERATION);
 }
 
 function installBuildingLayers(): void {
@@ -74,12 +93,16 @@ function installBuildingLayers(): void {
 
   if (buildingMode === "procedural") {
     status.textContent =
-      "OpenFreeMap loaded · LOD2 façades enabled · LOD3 streams automatically at close zoom";
+      "OpenFreeMap loaded · real terrain enabled · LOD3 streams automatically at close zoom";
   } else if (buildingMode === "style") {
-    status.textContent = "OpenFreeMap loaded · using style-provided 3D buildings";
+    status.textContent = "OpenFreeMap loaded · real terrain enabled · using style-provided 3D buildings";
   } else {
-    status.textContent = "OpenFreeMap loaded · no building layer found in this style";
+    status.textContent = "OpenFreeMap loaded · real terrain enabled · no building layer found in this style";
   }
+}
+
+function terrainGroundElevation(center: LngLatTuple): number {
+  return terrainEnabled ? terrainElevationAt(map, center) : 0;
 }
 
 function collectLod3Candidates(): BuildingCandidate[] {
@@ -100,6 +123,7 @@ function collectLod3Candidates(): BuildingCandidate[] {
     if (feature.sourceLayer !== "building") continue;
     const candidate = candidateFromFeature(feature, cameraCenter);
     if (!candidate || candidate.distanceMeters > LOD3_RADIUS_METERS) continue;
+    candidate.groundElevationMeters = terrainGroundElevation(candidate.center);
     const existing = deduplicated.get(candidate.key);
     if (!existing || candidate.ring.length > existing.ring.length) {
       deduplicated.set(candidate.key, candidate);
@@ -120,18 +144,24 @@ function refreshLod3Stream(): void {
 function updateStatus(): void {
   const center = map.getCenter();
   const zoom = map.getZoom();
+  const terrain = terrainEnabled
+    ? ` · terrain ${AWS_TERRARIUM_PROVIDER.label}`
+    : " · flat terrain";
   const detail =
     buildingDetailLayer.activeCount > 0
       ? ` · LOD3 ${buildingDetailLayer.activeCount}/${LOD3_MAX_BUILDINGS} buildings within ${LOD3_RADIUS_METERS} m`
       : zoom >= 15.3 && buildingMode === "procedural"
         ? " · façade LOD2"
         : "";
-  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${detail}`;
+  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${terrain}${detail}`;
 }
 
 map.on("load", () => {
+  installWorldTerrain();
   installBuildingLayers();
   refreshLod3Stream();
+  updateTerrainButton();
+  updateStatus();
 });
 
 map.on("idle", () => {
@@ -153,6 +183,14 @@ buildingsToggle.addEventListener("click", () => {
     refreshLod3Stream();
   }
   updateBuildingButton();
+  updateStatus();
+});
+
+terrainToggle.addEventListener("click", () => {
+  terrainEnabled = !terrainEnabled;
+  setTerrainEnabled(map, terrainEnabled, TERRAIN_EXAGGERATION);
+  refreshLod3Stream();
+  updateTerrainButton();
   updateStatus();
 });
 
@@ -211,6 +249,9 @@ map.on("click", (event) => {
   const profile = buildingProfileFromProperties(properties);
   const center = map.getCenter();
   const candidate = candidateFromFeature(building, [center.lng, center.lat]);
+  if (candidate) {
+    candidate.groundElevationMeters = terrainGroundElevation(candidate.center);
+  }
   const usefulProperties = Object.fromEntries(
     [
       "name",
@@ -232,6 +273,10 @@ map.on("click", (event) => {
         height: `${profile.height.toFixed(1)} m`,
         minHeight: `${profile.minHeight.toFixed(1)} m`,
         estimatedLevels: profile.estimatedLevels,
+        groundElevation: candidate
+          ? `${candidate.groundElevationMeters.toFixed(1)} m DEM`
+          : "unavailable",
+        terrainProvider: terrainEnabled ? AWS_TERRARIUM_PROVIDER.label : "disabled",
         lod3: candidate
           ? {
               key: candidate.key,
@@ -250,3 +295,4 @@ map.on("click", (event) => {
 });
 
 updateBuildingButton();
+updateTerrainButton();

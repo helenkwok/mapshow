@@ -181,7 +181,10 @@ function localRingForCandidate(candidate: BuildingCandidate): {
   const ring = openRing(candidate.ring);
   if (ring.length < 3) return null;
   const [lng, lat] = candidate.center;
-  const origin = MercatorCoordinate.fromLngLat([lng, lat], 0);
+  const origin = MercatorCoordinate.fromLngLat(
+    [lng, lat],
+    candidate.groundElevationMeters,
+  );
   const meterScale = origin.meterInMercatorCoordinateUnits();
   const points = ring.map(([pointLng, pointLat]) => {
     const mercator = MercatorCoordinate.fromLngLat([pointLng, pointLat], 0);
@@ -323,6 +326,19 @@ function buildCandidateGroup(candidate: BuildingCandidate, materials: DetailMate
   return group;
 }
 
+function updateCandidateElevation(
+  group: THREE.Group,
+  candidate: BuildingCandidate,
+): boolean {
+  const terrainOrigin = MercatorCoordinate.fromLngLat(
+    candidate.center,
+    candidate.groundElevationMeters,
+  );
+  if (Math.abs(group.position.z - terrainOrigin.z) < 1e-12) return false;
+  group.position.z = terrainOrigin.z;
+  return true;
+}
+
 export class BuildingDetailLayer implements CustomLayerInterface {
   readonly id = "mapshow-building-lod3-stream";
   readonly type = "custom" as const;
@@ -368,6 +384,7 @@ export class BuildingDetailLayer implements CustomLayerInterface {
     const desired = new Set(candidates.map((candidate) => candidate.key));
     let removed = 0;
     let created = 0;
+    let elevationChanged = false;
 
     for (const [key, group] of this.active) {
       if (!desired.has(key)) {
@@ -378,7 +395,11 @@ export class BuildingDetailLayer implements CustomLayerInterface {
     }
 
     for (const candidate of candidates) {
-      if (this.active.has(candidate.key)) continue;
+      const existing = this.active.get(candidate.key);
+      if (existing) {
+        elevationChanged = updateCandidateElevation(existing, candidate) || elevationChanged;
+        continue;
+      }
       const group = buildCandidateGroup(candidate, this.materials);
       if (!group) continue;
       this.scene.add(group);
@@ -386,7 +407,7 @@ export class BuildingDetailLayer implements CustomLayerInterface {
       created += 1;
     }
 
-    if (created > 0 || removed > 0) this.map?.triggerRepaint();
+    if (created > 0 || removed > 0 || elevationChanged) this.map?.triggerRepaint();
     return { activeBuildings: this.active.size, created, removed };
   }
 
