@@ -7,6 +7,7 @@ import com.onthegomap.planetiler.config.Arguments;
 import com.onthegomap.planetiler.reader.SourceFeature;
 import com.onthegomap.planetiler.reader.osm.OsmElement;
 import com.onthegomap.planetiler.reader.osm.OsmSourceFeature;
+import com.onthegomap.planetiler.reader.osm.SplitWay;
 import java.nio.file.Path;
 
 /** Generates a simulation-oriented road vector-tile layer from OpenStreetMap ways. */
@@ -16,9 +17,15 @@ public final class MapshowRoadProfile implements Profile {
   public static final int MAX_ZOOM = 16;
 
   @Override
+  public boolean splitOsmWayAtIntersections(OsmElement.Way way) {
+    return RoadTagNormalizer.isGameRoad(way.tags());
+  }
+
+  @Override
   public void processFeature(SourceFeature sourceFeature, FeatureCollector features) {
     if (!sourceFeature.canBeLine() || !RoadTagNormalizer.isGameRoad(sourceFeature.tags())) return;
-    if (!(sourceFeature instanceof OsmSourceFeature osmFeature)) return;
+    if (!(sourceFeature instanceof SplitWay splitWay)) return;
+    if (!(sourceFeature instanceof OsmSourceFeature<?> osmFeature)) return;
     if (!(osmFeature.originalElement() instanceof OsmElement.Way way)) return;
 
     int nodeCount = way.nodes().size();
@@ -26,18 +33,19 @@ public final class MapshowRoadProfile implements Profile {
     Long lastNode = nodeCount > 0 ? way.nodes().get(nodeCount - 1) : null;
     var attributes = RoadTagNormalizer.normalize(
       sourceFeature.tags(),
-      sourceFeature.id(),
+      way.id(),
       firstNode,
       lastNode,
       nodeCount
     );
+    attributes.put("segment_id", splitWay.uniqueId());
 
-    var road = features.line(LAYER)
+    var road = features.splitLine(LAYER, true)
       .setZoomRange(MIN_ZOOM, MAX_ZOOM)
-      // This is simulation input rather than cartographic decoration: retain small roads and source geometry vertices.
+      // Simulation input: retain short intersection-to-intersection segments and source vertices.
       .setMinPixelSize(0)
       .setPixelTolerance(0)
-      // Keep context beyond tile edges so the browser can build continuous road surfaces before clipping locally.
+      // Overlap adjacent tiles so local road-surface generation cannot expose cracks at tile boundaries.
       .setBufferPixels(32);
 
     for (var attribute : attributes.entrySet()) {
@@ -52,7 +60,7 @@ public final class MapshowRoadProfile implements Profile {
 
   @Override
   public String description() {
-    return "OpenStreetMap road ways retaining simulation-oriented identity, dimensions, access and vertical-layer metadata";
+    return "OpenStreetMap roads split at shared OSM intersections with simulation-oriented identity, dimensions, access and vertical-layer metadata";
   }
 
   @Override

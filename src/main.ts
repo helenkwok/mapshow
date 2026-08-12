@@ -19,12 +19,23 @@ import {
   setTerrainEnabled,
   terrainElevationAt,
 } from "./map/terrain";
+import {
+  GAME_ROAD_SOURCE_ID,
+  GAME_ROAD_SOURCE_LAYER,
+  installGameRoadSource,
+  type GameRoadSourceInstallation,
+} from "./map/game-roads";
+import { buildRoadWorld, type RoadWorld } from "./map/road-world";
+import { RoadSurfaceLayer, type RoadSurfaceStats } from "./map/road-surface-layer";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const LOD3_MIN_ZOOM = 16.1;
 const LOD3_RADIUS_METERS = 260;
 const LOD3_MAX_BUILDINGS = 24;
 const TERRAIN_EXAGGERATION = 1;
+const ROAD_SURFACE_MIN_ZOOM = 14.5;
+const ROAD_SURFACE_RADIUS_METERS = 650;
+const ROAD_SURFACE_MAX_SEGMENTS = 240;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -38,6 +49,7 @@ const status = requiredElement<HTMLDivElement>("#status");
 const featureInfo = requiredElement<HTMLDivElement>("#feature-info");
 const buildingsToggle = requiredElement<HTMLButtonElement>("#buildings-toggle");
 const terrainToggle = requiredElement<HTMLButtonElement>("#terrain-toggle");
+const roadsToggle = requiredElement<HTMLButtonElement>("#roads-toggle");
 const resetView = requiredElement<HTMLButtonElement>("#reset-view");
 const presetButtons = requiredElement<HTMLDivElement>("#preset-buttons");
 
@@ -59,11 +71,26 @@ map.addControl(
 );
 
 const buildingDetailLayer = new BuildingDetailLayer();
+const roadSurfaceLayer = new RoadSurfaceLayer();
 let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
 let terrainEnabled = true;
+let roadSurfacesEnabled = true;
 let buildingMode: "procedural" | "style" | "none" = "none";
 let lastLod3Candidates = 0;
+let gameRoadSource: GameRoadSourceInstallation = { enabled: false, debugVisible: false };
+let roadStats: RoadSurfaceStats = {
+  activeSegments: 0,
+  graphNodes: 0,
+  directedArcs: 0,
+  created: 0,
+  replaced: 0,
+  removed: 0,
+};
+
+function emptyRoadWorld(): RoadWorld {
+  return { segments: [], nodes: new Map(), arcs: [] };
+}
 
 function updateBuildingButton(): void {
   buildingsToggle.setAttribute("aria-pressed", String(buildingsVisible));
@@ -75,9 +102,26 @@ function updateTerrainButton(): void {
   terrainToggle.textContent = `Terrain: ${terrainEnabled ? "on" : "off"}`;
 }
 
+function updateRoadButton(): void {
+  roadsToggle.disabled = !gameRoadSource.enabled;
+  roadsToggle.setAttribute("aria-pressed", String(gameRoadSource.enabled && roadSurfacesEnabled));
+  roadsToggle.textContent = gameRoadSource.enabled
+    ? `Road surfaces: ${roadSurfacesEnabled ? "on" : "off"}`
+    : "Road surfaces: configure tiles";
+}
+
 function installWorldTerrain(): void {
   installTerrain(map, AWS_TERRARIUM_PROVIDER);
   setTerrainEnabled(map, terrainEnabled, TERRAIN_EXAGGERATION);
+}
+
+function installGameRoadWorld(): void {
+  gameRoadSource = installGameRoadSource(map);
+  const firstSymbolLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
+  if (!map.getLayer(roadSurfaceLayer.id)) {
+    map.addLayer(roadSurfaceLayer, firstSymbolLayer);
+  }
+  updateRoadButton();
 }
 
 function installBuildingLayers(): void {
@@ -89,15 +133,6 @@ function installBuildingLayers(): void {
   const firstSymbolLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
   if (!map.getLayer(buildingDetailLayer.id)) {
     map.addLayer(buildingDetailLayer, firstSymbolLayer);
-  }
-
-  if (buildingMode === "procedural") {
-    status.textContent =
-      "OpenFreeMap loaded · real terrain enabled · LOD3 streams automatically at close zoom";
-  } else if (buildingMode === "style") {
-    status.textContent = "OpenFreeMap loaded · real terrain enabled · using style-provided 3D buildings";
-  } else {
-    status.textContent = "OpenFreeMap loaded · real terrain enabled · no building layer found in this style";
   }
 }
 
@@ -135,10 +170,40 @@ function collectLod3Candidates(): BuildingCandidate[] {
     .slice(0, LOD3_MAX_BUILDINGS);
 }
 
+function collectRoadWorld(): RoadWorld {
+  if (
+    !gameRoadSource.enabled ||
+    !roadSurfacesEnabled ||
+    map.getZoom() < ROAD_SURFACE_MIN_ZOOM ||
+    !map.isStyleLoaded() ||
+    !map.getSource(GAME_ROAD_SOURCE_ID) ||
+    !map.isSourceLoaded(GAME_ROAD_SOURCE_ID)
+  ) {
+    return emptyRoadWorld();
+  }
+
+  const center = map.getCenter();
+  const cameraCenter: LngLatTuple = [center.lng, center.lat];
+  const features = map.querySourceFeatures(GAME_ROAD_SOURCE_ID, {
+    sourceLayer: GAME_ROAD_SOURCE_LAYER,
+  });
+  return buildRoadWorld(
+    features,
+    cameraCenter,
+    ROAD_SURFACE_RADIUS_METERS,
+    ROAD_SURFACE_MAX_SEGMENTS,
+  );
+}
+
 function refreshLod3Stream(): void {
   const candidates = collectLod3Candidates();
   lastLod3Candidates = candidates.length;
   buildingDetailLayer.setBuildings(candidates);
+}
+
+function refreshRoadSurfaces(): void {
+  const world = collectRoadWorld();
+  roadStats = roadSurfaceLayer.setWorld(world, map, terrainEnabled);
 }
 
 function updateStatus(): void {
@@ -149,23 +214,36 @@ function updateStatus(): void {
     : " · flat terrain";
   const detail =
     buildingDetailLayer.activeCount > 0
-      ? ` · LOD3 ${buildingDetailLayer.activeCount}/${LOD3_MAX_BUILDINGS} buildings within ${LOD3_RADIUS_METERS} m`
+      ? ` · LOD3 ${buildingDetailLayer.activeCount}/${LOD3_MAX_BUILDINGS} buildings`
       : zoom >= 15.3 && buildingMode === "procedural"
         ? " · façade LOD2"
         : "";
-  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${terrain}${detail}`;
+  const roads = !gameRoadSource.enabled
+    ? " · game roads unconfigured"
+    : roadStats.activeSegments > 0
+      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} segments · ${roadStats.graphNodes} graph nodes`
+      : roadSurfacesEnabled && zoom >= ROAD_SURFACE_MIN_ZOOM
+        ? " · game roads loading"
+        : "";
+  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${terrain}${detail}${roads}`;
 }
 
 map.on("load", () => {
   installWorldTerrain();
+  installGameRoadWorld();
   installBuildingLayers();
   refreshLod3Stream();
+  refreshRoadSurfaces();
+  updateBuildingButton();
   updateTerrainButton();
+  updateRoadButton();
   updateStatus();
 });
 
 map.on("idle", () => {
   refreshLod3Stream();
+  refreshRoadSurfaces();
+  updateStatus();
 });
 
 map.on("error", (event) => {
@@ -190,12 +268,23 @@ terrainToggle.addEventListener("click", () => {
   terrainEnabled = !terrainEnabled;
   setTerrainEnabled(map, terrainEnabled, TERRAIN_EXAGGERATION);
   refreshLod3Stream();
+  refreshRoadSurfaces();
   updateTerrainButton();
+  updateStatus();
+});
+
+roadsToggle.addEventListener("click", () => {
+  if (!gameRoadSource.enabled) return;
+  roadSurfacesEnabled = !roadSurfacesEnabled;
+  if (!roadSurfacesEnabled) roadSurfaceLayer.clear();
+  else refreshRoadSurfaces();
+  updateRoadButton();
   updateStatus();
 });
 
 resetView.addEventListener("click", () => {
   buildingDetailLayer.clear();
+  roadSurfaceLayer.clear();
   lastLod3Candidates = 0;
   map.easeTo({
     center: DEFAULT_PRESET.center,
@@ -214,6 +303,7 @@ presetButtons.addEventListener("click", (event) => {
   if (!preset) return;
 
   buildingDetailLayer.clear();
+  roadSurfaceLayer.clear();
   lastLod3Candidates = 0;
   map.flyTo({
     center: preset.center,
@@ -227,11 +317,13 @@ presetButtons.addEventListener("click", (event) => {
 
 map.on("moveend", () => {
   refreshLod3Stream();
+  refreshRoadSurfaces();
   updateStatus();
 });
 
 map.on("zoomend", () => {
   refreshLod3Stream();
+  refreshRoadSurfaces();
   updateStatus();
 });
 
@@ -286,6 +378,13 @@ map.on("click", (event) => {
               budget: LOD3_MAX_BUILDINGS,
             }
           : "footprint geometry unavailable",
+        roadWorld: gameRoadSource.enabled
+          ? {
+              surfaceSegments: roadStats.activeSegments,
+              graphNodes: roadStats.graphNodes,
+              directedArcs: roadStats.directedArcs,
+            }
+          : "configure VITE_GAME_ROADS_TILEJSON to enable",
       },
       source: usefulProperties,
     },
@@ -296,3 +395,4 @@ map.on("click", (event) => {
 
 updateBuildingButton();
 updateTerrainButton();
+updateRoadButton();

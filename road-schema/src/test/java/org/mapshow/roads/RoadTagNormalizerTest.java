@@ -36,11 +36,12 @@ class RoadTagNormalizerTest {
       7
     );
 
+    assertEquals(2, attrs.get("schema_version"));
     assertEquals(1234L, attrs.get("osm_id"));
     assertEquals("primary", attrs.get("road_class"));
     assertEquals(2, attrs.get("lanes"));
     assertEquals(80.5, ((Number) attrs.get("speed_kmh")).doubleValue(), 0.05);
-    assertEquals(6.4, ((Number) attrs.get("width_m")).doubleValue(), 0.05);
+    assertEquals(6.8, ((Number) attrs.get("width_m")).doubleValue(), 0.05);
     assertEquals("lanes", attrs.get("width_source"));
     assertEquals("paved", attrs.get("surface_class"));
     assertEquals(true, attrs.get("bridge"));

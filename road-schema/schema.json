@@ -1,13 +1,15 @@
 {
   "schema": "mapshow.game-road",
-  "version": 1,
+  "version": 2,
   "layer": "game_road",
   "minzoom": 12,
   "maxzoom": 16,
   "geometry": "LineString",
+  "segmentation": "OpenStreetMap ways split at shared OSM nodes before vector tiling",
   "properties": {
     "schema_version": { "type": "integer", "required": true },
-    "osm_id": { "type": "integer", "required": true, "description": "Stable OpenStreetMap way ID." },
+    "segment_id": { "type": "integer", "required": true, "description": "Planetiler-unique intersection-to-intersection road segment ID." },
+    "osm_id": { "type": "integer", "required": true, "description": "Stable parent OpenStreetMap way ID." },
     "highway": { "type": "string", "required": true, "description": "Raw OSM highway class." },
     "road_class": { "type": "string", "required": true, "description": "Link suffix removed for class-level logic." },
     "is_link": { "type": "boolean", "required": true },
@@ -48,8 +50,8 @@
     "lit": { "type": "string" },
     "incline": { "type": "string" },
     "priority": { "type": "integer", "required": true },
-    "first_node": { "type": "integer", "description": "First OSM node ID of source way." },
-    "last_node": { "type": "integer", "description": "Last OSM node ID of source way." },
-    "node_count": { "type": "integer", "required": true }
+    "first_node": { "type": "integer", "required": true, "description": "First OSM node ID of this intersection-split segment." },
+    "last_node": { "type": "integer", "required": true, "description": "Last OSM node ID of this intersection-split segment." },
+    "node_count": { "type": "integer", "required": true, "description": "Number of OSM source vertices retained in this segment before tile clipping." }
   }
 }

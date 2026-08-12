@@ -1,27 +1,42 @@
-import type { LayerSpecification, Map as MapLibreMap, MapGeoJSONFeature } from "maplibre-gl";
+import type {
+  GeoJSONFeature,
+  LayerSpecification,
+  Map as MapLibreMap,
+  MapGeoJSONFeature,
+} from "maplibre-gl";
 
 export const GAME_ROAD_SOURCE_ID = "mapshow-game-roads";
 export const GAME_ROAD_SOURCE_LAYER = "game_road";
 export const GAME_ROAD_DEBUG_LAYER_ID = "mapshow-game-roads-debug";
+export const GAME_ROAD_SCHEMA_VERSION = 2;
+
+export type GameRoadFeature = GeoJSONFeature | MapGeoJSONFeature;
 
 export interface GameRoadRecord {
+  schemaVersion: number;
+  segmentId: number;
   osmId: number;
   highway: string;
   roadClass: string;
   name?: string;
   ref?: string;
+  access?: string;
+  vehicle?: string;
+  motorVehicle?: string;
   lanes?: number;
   speedKmh?: number;
   widthM: number;
   widthSource: "tag" | "lanes" | "class_default";
   surface?: string;
   surfaceClass: "paved" | "unpaved" | "unknown";
+  smoothness?: string;
   oneway: -1 | 0 | 1;
   bridge: boolean;
   tunnel: boolean;
   layer: number;
-  firstNode?: number;
-  lastNode?: number;
+  priority: number;
+  firstNode: number;
+  lastNode: number;
   nodeCount: number;
 }
 
@@ -55,9 +70,19 @@ function booleanProperty(properties: Record<string, unknown>, key: string): bool
   return ["true", "yes", "1"].includes(String(value).toLowerCase());
 }
 
-export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord | null {
-  if (feature.sourceLayer !== GAME_ROAD_SOURCE_LAYER) return null;
+function featureSourceLayer(feature: GameRoadFeature): string | undefined {
+  return "sourceLayer" in feature ? feature.sourceLayer : undefined;
+}
+
+export function gameRoadFromFeature(feature: GameRoadFeature): GameRoadRecord | null {
+  // queryRenderedFeatures() exposes sourceLayer while querySourceFeatures() does not; callers of the latter
+  // already constrain the query to GAME_ROAD_SOURCE_LAYER.
+  const sourceLayer = featureSourceLayer(feature);
+  if (sourceLayer !== undefined && sourceLayer !== GAME_ROAD_SOURCE_LAYER) return null;
+
   const properties = (feature.properties ?? {}) as Record<string, unknown>;
+  const schemaVersion = numberProperty(properties, "schema_version");
+  const segmentId = numberProperty(properties, "segment_id");
   const osmId = numberProperty(properties, "osm_id");
   const highway = stringProperty(properties, "highway");
   const roadClass = stringProperty(properties, "road_class");
@@ -66,9 +91,14 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
   const surfaceClass = stringProperty(properties, "surface_class");
   const oneway = numberProperty(properties, "oneway");
   const layer = numberProperty(properties, "layer");
+  const priority = numberProperty(properties, "priority");
+  const firstNode = numberProperty(properties, "first_node");
+  const lastNode = numberProperty(properties, "last_node");
   const nodeCount = numberProperty(properties, "node_count");
 
   if (
+    schemaVersion !== GAME_ROAD_SCHEMA_VERSION ||
+    segmentId === undefined ||
     osmId === undefined ||
     !highway ||
     !roadClass ||
@@ -77,31 +107,49 @@ export function gameRoadFromFeature(feature: MapGeoJSONFeature): GameRoadRecord 
     !["paved", "unpaved", "unknown"].includes(surfaceClass ?? "") ||
     ![-1, 0, 1].includes(oneway ?? Number.NaN) ||
     layer === undefined ||
+    priority === undefined ||
+    firstNode === undefined ||
+    lastNode === undefined ||
     nodeCount === undefined
   ) {
     return null;
   }
 
   return {
+    schemaVersion,
+    segmentId,
     osmId,
     highway,
     roadClass,
     name: stringProperty(properties, "name"),
     ref: stringProperty(properties, "ref"),
+    access: stringProperty(properties, "access"),
+    vehicle: stringProperty(properties, "vehicle"),
+    motorVehicle: stringProperty(properties, "motor_vehicle"),
     lanes: numberProperty(properties, "lanes"),
     speedKmh: numberProperty(properties, "speed_kmh"),
     widthM,
     widthSource: widthSource as GameRoadRecord["widthSource"],
     surface: stringProperty(properties, "surface"),
     surfaceClass: surfaceClass as GameRoadRecord["surfaceClass"],
+    smoothness: stringProperty(properties, "smoothness"),
     oneway: oneway as -1 | 0 | 1,
     bridge: booleanProperty(properties, "bridge"),
     tunnel: booleanProperty(properties, "tunnel"),
     layer,
-    firstNode: numberProperty(properties, "first_node"),
-    lastNode: numberProperty(properties, "last_node"),
+    priority,
+    firstNode,
+    lastNode,
     nodeCount,
   };
+}
+
+/** Access restrictions are retained for routing policy; only explicit motor/vehicle/access=no is excluded here. */
+export function isMotorRoad(record: GameRoadRecord): boolean {
+  if (record.motorVehicle?.toLowerCase() === "no") return false;
+  if (record.vehicle?.toLowerCase() === "no") return false;
+  if (record.access?.toLowerCase() === "no") return false;
+  return true;
 }
 
 export function installGameRoadSource(map: MapLibreMap): GameRoadSourceInstallation {
