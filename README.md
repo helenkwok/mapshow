@@ -31,9 +31,9 @@ npm run preview
 
 ## Current prototype
 
-The prototype now includes real DEM terrain, bounded procedural building LODs, a dedicated topology-aware `game_road` tileset, and a local road-world renderer. Road ways are split at shared OSM junction nodes in Planetiler, grouped/stiched after MVT clipping in the browser, converted into a directed graph, and rendered as metric-width Three.js carriageways.
+The prototype now includes real DEM terrain, bounded procedural building LODs, a dedicated topology-aware `game_road` tileset, and a local road-world renderer. Road ways are split at shared OSM junction nodes in Planetiler, grouped/stitched after MVT clipping in the browser, converted into a directed graph, and rendered as metric-width Three.js carriageways.
 
-The road layer now also provides:
+The road layer also provides:
 
 - smoothed terrain-following elevation profiles instead of raw DEM-to-vertex draping;
 - eased bridge/tunnel transitions at mixed vertical-mode endpoints;
@@ -41,7 +41,11 @@ The road layer now also provides:
 - directional lane counts from `lanes`, `lanes:forward`, and `lanes:backward` when available;
 - inferred physical lane counts only when explicit lane counts are absent;
 - lane centerline geometry with explicit left- or right-hand traffic placement;
-- a candidate lane-to-lane connection graph at shared road nodes;
+- OSM `turn:lanes*` semantics applied per directed lane;
+- simple unconditional via-node `no_*` / `only_*` restriction-relation enforcement;
+- conditional and via-way restrictions preserved but reported as unenforced rather than guessed;
+- a legal lane-to-lane connection graph separated from raw geometric candidates;
+- renderer-independent simplified collision triangle bodies for road segments and intersections;
 - preset-aware traffic side: Adelaide, Hong Kong, and Tokyo use left-hand traffic; Manhattan uses right-hand traffic;
 - a manual traffic-side toggle for arbitrary locations;
 - bounded road streaming at 650 m / 240 active topology segments.
@@ -90,10 +94,12 @@ OpenStreetMap PBF
       ▼
 Planetiler MapshowRoadProfile
       ├─ split at shared OSM junction nodes
-      └─ retain identity / lanes / width / access / vertical metadata
+      ├─ retain identity / lanes / width / access / vertical metadata
+      ├─ retain turn:lanes* / change:lanes*
+      └─ attach from-way restriction relation metadata
       │
       ▼
- game_road MVT schema v2
+ game_road MVT schema v3
       │
       ▼
 road-world assembler
@@ -103,10 +109,12 @@ road-world assembler
       └─ directed road graph
       │
       ▼
-lane network
+lane policy
       ├─ left/right traffic placement
       ├─ directed lane centerlines
-      └─ candidate node connections
+      ├─ geometric candidate connections
+      ├─ turn:lanes filtering
+      └─ simple via-node restriction filtering
       │
       ▼
 road profile + surface generation
@@ -114,7 +122,8 @@ road profile + surface generation
       ├─ elevation smoothing / grade limiting
       ├─ bridge/tunnel approach easing
       ├─ metric carriageway strips
-      └─ approach-shaped intersection polygons
+      ├─ approach-shaped intersection polygons
+      └─ simplified collision triangle bodies
 ```
 
 The generator is in [`road-schema/`](road-schema/) and details are in [`docs/GAME_ROADS.md`](docs/GAME_ROADS.md). Compile/test it with Java 21:
@@ -135,9 +144,11 @@ Without `VITE_GAME_ROADS_TILEJSON`, Mapshow disables simulation road surfaces ra
 
 ## Scope boundary
 
-The lane connection graph is deliberately **candidate connectivity**, not final legal turn routing. Turn restriction relations, `turn:lanes`, lane-change rules, signal phases, surveyed bridge deck elevations, collision bodies, and vehicle dynamics are still separate future layers.
+Mapshow now separates **candidate topology**, **legal lane connectivity**, and **collision geometry**. Simple via-node restrictions and turn-lane indications are enforced for the generic car policy, while conditional/via-way restrictions, signal phases, `change:lanes*`, and jurisdiction-specific rules remain explicit future policy layers.
 
-Bridge and tunnel vertical positions are therefore improved visual/world approximations, not engineering survey geometry.
+The collision world is deliberately physics-engine agnostic. It exposes coarse road/intersection triangle bodies but does not yet choose Rapier, Jolt, Bullet, or another vehicle-physics stack.
+
+Bridge and tunnel vertical positions remain improved visual/world approximations, not engineering survey geometry.
 
 ## Roadmap
 
@@ -148,10 +159,10 @@ Bridge and tunnel vertical positions are therefore improved visual/world approxi
 5. Real DEM terrain — complete.
 6. Dedicated game-road schema — complete.
 7. Topology-aware road graph and carriageway surfaces — complete.
-8. **Road refinement: intersection polygons, lane centerlines/connectivity, grade smoothing and traffic side — current.**
-9. Turn restrictions + lane policy + collision/physics bodies.
-10. Terrain refinement and worker/floating-origin world streaming.
-11. Vehicle controller and driving simulation.
+8. Road refinement: intersection polygons, lane centerlines/connectivity, grade smoothing and traffic side — complete.
+9. **Turn policy + simplified collision bodies — current.**
+10. Lane-change/signal policy, routing interface and floating-origin physics adapter.
+11. Vehicle controller, suspension/tire model and driving simulation.
 
 ## Data and attribution
 
