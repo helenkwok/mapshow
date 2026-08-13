@@ -26,7 +26,27 @@ jobs:
       - name: Build
         run: npm run build
 
-  road-schema:
+  road-schema-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: road-schema -> target
+
+      - name: Format check
+        run: cargo fmt --manifest-path road-schema/Cargo.toml --all -- --check
+
+      - name: Compile and test Rust game-road generator
+        run: cargo test --manifest-path road-schema/Cargo.toml --all-targets
+
+  road-schema-java-parity:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -39,5 +59,5 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Compile and test game-road generator
+      - name: Compile and test current Java generator for migration parity
         run: mvn -B -f road-schema/pom.xml verify
