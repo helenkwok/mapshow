@@ -23,6 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Run browser unit tests
+        run: npm test
+
       - name: Build
         run: npm run build
 
