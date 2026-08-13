@@ -1,69 +1,123 @@
-# Physics coordinate boundary
+# Physics architecture
 
-Mapshow keeps geographic rendering and physics coordinates separate.
+Mapshow keeps geographic rendering, collision generation and the physics engine separated.
 
-## Why a floating origin
+## Coordinate boundary
 
-MapLibre renders the world in Web Mercator coordinates. Those coordinates are appropriate for a map renderer but are a poor long-term coordinate system for vehicle physics: a car, wheel collider, suspension ray and contact manifold should operate on small local metre values rather than planet-scale geographic coordinates.
+MapLibre renders the world in Web Mercator coordinates. Vehicle physics should not use planet-scale map coordinates, so Mapshow converts collision geometry into a floating local metre frame.
 
-Mapshow therefore uses a floating physics frame. Until a player vehicle exists, the camera centre is used as the player proxy.
+Until a player vehicle exists, the camera centre acts as the player proxy. The default origin shifts after roughly 400 m.
 
-The default frame moves after the camera has travelled 400 m from the current physics origin. Moving the frame does **not** rebuild OSM topology, lanes, road profiles or visual Three.js meshes. It only retransforms the already generated collision bodies into a new local frame.
-
-## Physics axes
-
-The engine-neutral physics convention is:
+Physics axes are:
 
 - `+X`: east
 - `+Y`: up
 - `+Z`: north
 - units: metres
 
-Road collision geometry is generated per road/intersection in the MapLibre rendering convention and converted at the adapter boundary. Terrain elevations are converted to height relative to the floating origin elevation.
+Changing the floating origin does not rebuild OSM topology, lanes, road profiles or visual Three.js road meshes. Existing collision bodies are re-expressed in the new local frame and passed through the collider sync boundary.
+
+## Data flow
+
+```text
+RoadCollisionWorld
+  geographic/MapLibre-local triangle bodies
+             │
+             ▼
+RoadPhysicsAdapter
+  local X-east / Y-up / Z-north metres
+             │
+             ▼
+PhysicsSyncBatch
+  created / updated / removed collider IDs
+             │
+             ▼
+RapierPhysicsWorld
+  streamed static trimesh colliders
+```
 
 ## Modules
 
-`src/map/floating-origin.ts`
+### `src/map/floating-origin.ts`
 
-- owns the current geographic anchor
-- stores the anchor Mercator coordinate and metres-to-Mercator scale
-- increments an origin revision when the anchor shifts
-- intentionally has no dependency on a physics engine
+Owns the geographic/local coordinate boundary:
 
-`src/map/physics-adapter.ts`
+- current geographic anchor;
+- origin elevation;
+- Mercator coordinate and metres-to-Mercator scale;
+- origin revision;
+- distance-triggered rebasing.
 
-- consumes `RoadCollisionWorld`
-- converts each triangle mesh into the local X-east/Y-up/Z-north frame
-- keeps stable collider IDs
-- reports created, updated and removed colliders as a sync batch
-- retransforms active colliders when the floating-origin revision changes
-- intentionally does not instantiate Rapier/Bullet/Ammo bodies
+It has no dependency on Rapier.
 
-`src/map/road-collision.ts`
+### `src/map/physics-adapter.ts`
 
-- remains the renderer-independent geographic collision source
-- contains road strips and intersection triangle meshes
-- retains OSM-derived surface/bridge/tunnel/layer metadata for later material and contact policy
+Converts renderer-independent `RoadCollisionWorld` bodies into local static trimesh descriptors:
 
-## Engine adapter contract
+- stable collider IDs;
+- X-east/Y-up/Z-north vertex coordinates;
+- created/updated/removed delta batches;
+- road/intersection metadata;
+- retransformation after an origin revision changes.
 
-A future physics backend should consume `PhysicsSyncBatch` rather than reading MapLibre or Three.js objects directly.
+This remains the engine-neutral contract.
 
-For each batch:
+### `src/map/rapier-physics.ts`
 
-1. remove IDs in `removed`;
-2. replace bodies in `updated`;
-3. create bodies in `created`;
-4. treat a changed `originRevision` as a local-world rebase;
-5. keep the player/chassis state in the same floating frame.
+Consumes `PhysicsSyncBatch` and owns the Rapier world:
 
-This keeps Rapier replaceable and prevents vehicle code from depending on Web Mercator.
+- gravity uses local `-Y`;
+- one standalone static trimesh collider is created for each streamed road/intersection collision body;
+- collider IDs remain owned by Mapshow, while Rapier handles are internal;
+- streamed removals delete Rapier colliders;
+- updates replace colliders without changing the browser road-world contract;
+- friction is selected from the coarse road surface class;
+- a fixed-step method is present for later dynamic bodies.
 
-## Next milestone
+No chassis or vehicle dynamics are created yet.
 
-The next step is a Rapier implementation of this boundary:
+### `src/map/rapier-debug-layer.ts`
 
-- one static trimesh collider per streamed road/intersection body;
-- collider add/update/remove from `PhysicsSyncBatch`;
-- a debug overlay comparing render geometry and physics geometry;
-- no vehicle controller until collider streaming and origin rebasing are validated.
+Provides an optional MapLibre/Three.js custom layer that renders Rapier's debug collision lines back in the geographic scene. It converts local physics axes back to the Mapshow rendering convention and applies the current floating-origin transform.
+
+### `src/map/road-collision.ts`
+
+Remains the physics-engine-independent source of simplified road and intersection collision triangles.
+
+## Collider lifecycle
+
+For each streamed road-world refresh:
+
+1. `RoadSurfaceLayer` updates visible road/intersection geometry and `RoadCollisionWorld`;
+2. `FloatingOriginController` updates or retains the local frame;
+3. `RoadPhysicsAdapter.sync()` returns created/updated/removed local collider descriptors;
+4. `RapierPhysicsWorld.sync()` applies that delta to Rapier;
+5. the optional debug layer reads Rapier debug geometry for visual verification.
+
+Turning road surfaces off clears both the engine-neutral collider cache and the Rapier world colliders.
+
+Terrain on/off forces a floating-origin reset so the local vertical datum cannot remain anchored to a stale DEM elevation.
+
+## Current scope
+
+Rapier currently represents the **static driveable environment only**.
+
+Implemented:
+
+- streamed road trimesh colliders;
+- streamed intersection trimesh colliders;
+- floating-origin rebasing;
+- surface-class friction defaults;
+- debug collision overlay;
+- fixed-step world API ready for dynamic bodies.
+
+Not implemented yet:
+
+- player chassis;
+- wheel/suspension model;
+- tyre friction/slip forces;
+- throttle/braking/steering;
+- collision filtering for dynamic traffic;
+- sleeping/timestep tuning under real vehicle load.
+
+The next physics milestone is a minimal dynamic test body/chassis that validates contact stability on streamed road, intersection and origin-rebase boundaries before implementing a full vehicle model.
