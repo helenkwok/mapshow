@@ -41,10 +41,38 @@ Requirements:
 - npm
 - Rust stable only if you want to generate `game_road` tiles
 
+For the visual map, terrain and buildings:
+
 ```bash
 npm install
 npm run dev
 ```
+
+Without a `game_road` TileJSON source, simulation road surfaces and road physics stay disabled. OpenFreeMap streets, labels, terrain and buildings still work.
+
+### Enable local simulation roads and physics
+
+Obtain an OpenStreetMap `.osm.pbf` extract that covers the area you want to test, then run:
+
+```bash
+npm run roads:build -- data/region.osm.pbf
+npm run dev:roads
+```
+
+`roads:build` runs the Rust generator and writes temporary development output to:
+
+```text
+public/game-roads/tilejson.json
+public/game-roads/{z}/{x}/{y}.pbf
+```
+
+`dev:roads` starts Vite in a dedicated `roads` mode on `http://localhost:5173` and points Mapshow at that same-origin TileJSON automatically. It uses `--strictPort` because the generated TileJSON also targets port 5173; if that port is occupied, Vite fails instead of silently changing ports.
+
+The generated `public/game-roads/` directory is ignored by Git. Re-run `roads:build` whenever you switch to a different OSM extract.
+
+**The extract must cover the location currently shown in Mapshow.** For example, an extract containing Monaco proves the pipeline works but will not provide simulation road surfaces while the map is positioned in Manhattan.
+
+For an externally hosted road tileset, continue to use `VITE_GAME_ROADS_TILEJSON`; `npm run dev:roads` is only a local convenience mode.
 
 Tests and production build:
 
@@ -53,8 +81,6 @@ npm test
 npm run build
 npm run preview
 ```
-
-Without `VITE_GAME_ROADS_TILEJSON`, the map, terrain and buildings still work. Simulation road surfaces and road physics remain disabled rather than silently falling back to the cartographic transportation layer.
 
 ## Browser controls
 
@@ -155,7 +181,7 @@ cargo fmt --manifest-path road-schema/Cargo.toml --all -- --check
 cargo test --manifest-path road-schema/Cargo.toml --all-targets
 ```
 
-Build XYZ MVT plus `tilejson.json`:
+For local Vite development, prefer the `roads:build` workflow above. For hosted XYZ MVT plus `tilejson.json`:
 
 ```bash
 cargo run --release --manifest-path road-schema/Cargo.toml -- \
@@ -174,7 +200,7 @@ cargo run --release --manifest-path road-schema/Cargo.toml -- \
   --output data/game-roads.pmtiles
 ```
 
-Configure the browser with XYZ/TileJSON output:
+Configure an externally hosted XYZ/TileJSON source with:
 
 ```bash
 VITE_GAME_ROADS_TILEJSON=https://tiles.example.com/game-roads/tilejson.json
@@ -259,6 +285,8 @@ src/map/vehicle-chassis.ts    chassis dimensions + control contract
 src/map/vehicle-suspension.ts raycast wheel/suspension configuration
 src/map/*.test.ts             browser unit + Rapier integration tests
 road-schema/                  Rust OSM → game-road tile generator
+scripts/                      local development helpers
+public/game-roads/            generated local XYZ tiles (ignored)
 docs/ARCHITECTURE.md          system architecture
 docs/GAME_ROADS.md            road schema/generator/runtime details
 docs/PHYSICS.md               floating-origin and physics lifecycle

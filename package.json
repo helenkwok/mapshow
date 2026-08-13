@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "dev:clean": "node -e \"require('node:fs').rmSync('node_modules/.vite',{recursive:true,force:true})\" && vite",
+    "dev:roads": "node scripts/check-local-roads.mjs && vite --mode roads --port 5173 --strictPort",
+    "roads:build": "node scripts/build-local-roads.mjs",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
