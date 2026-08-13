@@ -43,7 +43,7 @@ Its purpose is to expose missing collision, seams, unstable contact, streaming g
 
 ## Minimal chassis
 
-Mapshow now also has a separate single-body chassis validation object.
+Mapshow also has a separate single-body chassis validation object.
 
 The chassis uses a car-like footprint and 1,200 kg test mass with CCD, damping and coarse friction. It is controlled through direct rigid-body forces/torques:
 
@@ -55,7 +55,9 @@ Space     braking force opposite horizontal velocity
 
 The actuation math lives in `src/map/vehicle-chassis.ts`, not inside Rapier-specific code. `RapierPhysicsWorld` converts that result into `resetForces`, `resetTorques`, `addForce` and `addTorque` calls before each fixed substep.
 
-This is intentionally a **validation chassis, not a car model**. Rapier's own rigid-body documentation notes that rigid bodies alone are not sufficient for full car dynamics; the next real vehicle stage needs wheel/suspension/tyre constraints or contact forces.
+The temporary thrust values deliberately exceed the static-friction threshold of the validation chassis on a paved road so the control path is observable in tests. They are not intended to represent a production powertrain or tyre force budget.
+
+This is intentionally a **validation chassis, not a car model**. The next real vehicle stage needs wheel/suspension/tyre contacts rather than more tuning of the direct rigid-body controls.
 
 ## Floating-origin rebasing
 
@@ -93,16 +95,17 @@ With probe/chassis bodies active, debug geometry refreshes while they are moving
 
 ## Tests
 
-The browser unit suite intentionally tests engine-independent behavior first:
+Vitest covers both the engine-independent contracts and a real Rapier/WASM integration path:
 
 - floating-origin coordinate transformations;
 - road collision geometry;
 - `PhysicsSyncBatch` lifecycle behavior;
-- chassis force/torque calculations.
+- chassis force/torque calculations;
+- a real Rapier world containing a static road trimesh and a dynamic chassis that must fall into contact and then move under throttle.
 
-Strict TypeScript/Vite CI verifies that the current Rapier API surface compiles against `@dimforge/rapier3d-compat`.
+CI runs that suite before strict TypeScript/Vite compilation. The integration test exists specifically to catch runtime/WASM behavior that a successful typecheck cannot prove.
 
-A later milestone should add deterministic Rapier integration tests around suspension contacts and chassis pose once those systems exist.
+Future Rapier integration tests should extend this same layer for suspension contacts, chassis pose and origin rebasing once the suspension system exists.
 
 ## Next physics milestone
 
