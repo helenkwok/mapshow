@@ -257,7 +257,7 @@ CI has two independent paths.
 
 ### Rust generator tests
 
-CI runs Rust formatting and unit tests, then downloads a real Monaco `.osm.pbf` extract and requires both non-empty XYZ MVT/TileJSON and PMTiles output. The XYZ smoke path also exercises the same Node wrapper used by `npm run roads:build`.
+CI runs Rust formatting and unit tests, then downloads a real Monaco `.osm.pbf` extract and requires both non-empty XYZ MVT/TileJSON and PMTiles output.
 
 ## Known limitations
 
