@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::schema::SCHEMA_VERSION;
 
@@ -90,7 +90,8 @@ fn first_number(value: &str) -> Option<f64> {
     let mut seen_digit = false;
 
     for (index, ch) in value.char_indices() {
-        let allowed = ch.is_ascii_digit() || ch == '.' || ((ch == '+' || ch == '-') && start.is_none());
+        let allowed =
+            ch.is_ascii_digit() || ch == '.' || ((ch == '+' || ch == '-') && start.is_none());
         if allowed {
             if start.is_none() {
                 start = Some(index);
