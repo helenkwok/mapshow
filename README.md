@@ -1,128 +1,125 @@
 # Mapshow
 
-Mapshow is an open-data browser experiment for turning global map data into a lightweight 3D world.
+Mapshow is an open-data browser prototype for building a lightweight, driveable 3D world from global map data.
 
-The project deliberately separates **map delivery** from **game/world generation**:
+It combines:
 
-- [OpenFreeMap](https://openfreemap.org/) provides OpenStreetMap-derived vector tiles for the visual basemap.
-- [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) renders the global map and DEM terrain in the browser.
-- [AWS Terrain Tiles / Tilezen](https://registry.opendata.aws/terrain-tiles/) provides the default real elevation source in Terrarium format.
-- Mapshow progressively enriches OpenMapTiles building footprints instead of treating simple extrusion as the final building representation.
-- Three.js is used for close-range world geometry that normal map style layers are not intended to generate.
-- `road-schema/` is a Rust generator for a separate simulation-oriented OSM road tileset rather than treating visual cartographic roads as physics-ready data.
+- **OpenFreeMap / OpenStreetMap** for the visual basemap and building footprints;
+- **MapLibre GL JS** for map rendering and DEM terrain;
+- **Three.js** for close-range procedural buildings and road geometry;
+- a **Rust game-road generator** for topology-aware simulation tiles;
+- **Rapier 3D** for streamed static road/intersection collision bodies.
 
-This repository does **not** contain source code or assets copied from MGame or Hop.Earth. Those projects are architectural references for features implemented independently here.
+Mapshow does not use Google Maps, commercial satellite imagery, or photogrammetry. It also does not contain source code or assets copied from MGame or Hop.Earth; those projects are architectural references only.
 
-## Run locally
+## What works now
 
-Requirements: Node.js 22+ and npm.
+The current prototype has:
+
+- global OpenFreeMap basemap;
+- real 3D terrain from Terrarium DEM tiles;
+- procedural building LOD1/LOD2/LOD3;
+- bounded nearby building streaming;
+- a dedicated `game_road` vector-tile schema generated from OSM PBF in Rust;
+- road splitting at real shared OSM nodes;
+- directed road topology and lane centre-lines;
+- left- and right-hand traffic placement;
+- `turn:lanes*` filtering;
+- simple unconditional via-node `no_*` / `only_*` OSM restriction enforcement;
+- terrain-aware road profiles, bridges/tunnels and generated intersection surfaces;
+- simplified road/intersection collision meshes;
+- a floating physics origin using local metres;
+- streamed Rapier static trimesh colliders;
+- optional Rapier collision debug rendering.
+
+There is **not yet a vehicle controller**. Suspension, tyre forces, throttle/braking and player driving are later milestones.
+
+## Quick start
+
+Requirements:
+
+- Node.js 22+
+- npm
+- Rust stable only if you want to generate game-road tiles
+
+Run the browser app:
 
 ```bash
 npm install
 npm run dev
 ```
 
-For a production web build:
+Production build:
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## Current prototype
+Without a configured game-road TileJSON endpoint, the map, terrain and buildings still work; simulation road surfaces and physics colliders remain disabled.
 
-The prototype includes real DEM terrain, bounded procedural building LODs, a dedicated topology-aware `game_road` tileset, and a local road-world renderer. The Rust road generator splits OSM ways at real shared road nodes before tile clipping; the browser then groups/stitches clipped MVT fragments, builds a directed topology graph, derives lanes and legal turns, and renders metric-width Three.js carriageways.
-
-The road layer provides:
-
-- smoothed terrain-following elevation profiles instead of raw DEM-to-vertex draping;
-- eased bridge/tunnel transitions at mixed vertical-mode endpoints;
-- approach-shaped intersection polygons built from real incident-road headings and widths;
-- directional lane counts from `lanes`, `lanes:forward`, and `lanes:backward` when available;
-- lane centerline geometry with explicit left- or right-hand traffic placement;
-- OSM `turn:lanes*` semantics applied per directed lane;
-- simple unconditional via-node `no_*` / `only_*` restriction-relation enforcement;
-- conditional and via-way restrictions preserved but reported as unenforced rather than guessed;
-- a legal lane-to-lane connection graph separated from raw geometric candidates;
-- renderer-independent simplified collision triangle bodies for road segments and intersections;
-- bounded road streaming at 650 m / 240 active topology segments.
-
-Access restrictions such as private/no-access roads are retained as routing metadata and do not make the physical road disappear from the world geometry.
-
-## Terrain pipeline
+## Architecture
 
 ```text
-AWS Open Data elevation-tiles-prod
-          │
-          │ Terrarium PNG (z0–15)
-          ▼
-MapLibre raster-dem source
-          │
-          ├─ 3D terrain mesh
-          ├─ hillshade
-          └─ queryTerrainElevation()
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-  LOD3 building Z       road profile sampler
-                              │
-                       smooth / grade-limit
-                              │
-                    carriageways + junctions
+OpenFreeMap / OpenMapTiles          Terrarium DEM
+          │                              │
+          ▼                              ▼
+      MapLibre GL JS ─────────────── 3D terrain
+          │                              │
+          ├─ visual map                  └─ elevation sampling
+          ├─ LOD1/LOD2 buildings              │
+          │                                    ▼
+          └──────────────┐              road/building Z
+                         │
+                         ▼
+                    Three.js
+               LOD3 buildings + roads
+
+OSM .osm.pbf
+     │
+     ▼
+Rust `road-schema/`
+     │
+     ├─ shared-node topology
+     ├─ schema-v3 road metadata
+     ├─ turn/restriction metadata
+     └─ MVT clipping
+     │
+     ├───────────────┐
+     ▼               ▼
+XYZ .pbf          PMTiles v3
++ TileJSON
+     │
+     ▼
+Browser road-world assembler
+     │
+     ├─ directed graph
+     ├─ lane policy
+     ├─ legal turn graph
+     ├─ terrain-aware road surfaces
+     └─ collision triangle bodies
+             │
+             ▼
+     floating-origin adapter
+       X east / Y up / Z north
+             │
+             ▼
+          Rapier 3D
 ```
 
-The terrain provider is isolated in `src/map/terrain.ts`, so Copernicus GLO-30 or higher-resolution regional data can later replace/override the current source without changing building or road contracts.
+The important separation is that **OpenFreeMap is the visual map layer**, while the Rust `game_road` tiles are a separate simulation-oriented dataset. Cartographic road tiles are not treated as physics-ready road geometry.
 
-## Building LOD strategy
+## Generate game-road tiles
 
-```text
-LOD1  OpenMapTiles footprint → simple extrusion
-LOD2  footprint + height     → segmented patterned façade
-LOD3  nearby footprints      → metric window/door/roof geometry in Three.js
-```
+`road-schema/` is a Rust binary/library using a multi-pass, disk-backed pipeline so large extracts do not require the whole road graph or all generated tiles in RAM.
 
-LOD3 activates at zoom 16.1 or closer, considers buildings within 260 m, and keeps at most 24 detailed buildings active with explicit per-building geometry caps and GPU disposal.
-
-## Rust game-road generator
-
-`road-schema/` is a standalone Rust binary/library. Its production path is deliberately multi-pass and disk-backed so large extracts do not require the full road graph or all generated tile features in RAM.
-
-```text
-OpenStreetMap .osm.pbf
-        │
-        ├─ pass 1: road-node usage + restriction relations
-        │             │
-        │             ▼
-        │         redb scratch
-        │
-        ├─ pass 2: coordinates for referenced road nodes only
-        │             │
-        │             ▼
-        │         redb scratch
-        │
-        └─ pass 3: split ways at shared road nodes
-                      ├─ schema-v3 normalization
-                      ├─ turn:lanes* / change:lanes*
-                      ├─ restriction metadata
-                      └─ buffered MVT clipping
-                              │
-                              ▼
-                       disk-backed tile spool
-                              │
-                      one tile at a time
-                         ┌────┴────┐
-                         ▼         ▼
-                    XYZ .pbf    PMTiles v3
-                    + TileJSON   archive
-```
-
-Test the generator:
+Run tests:
 
 ```bash
 cargo test --manifest-path road-schema/Cargo.toml --all-targets
 ```
 
-Build static XYZ MVT plus `tilejson.json`:
+Build XYZ MVT plus `tilejson.json`:
 
 ```bash
 cargo run --release --manifest-path road-schema/Cargo.toml -- \
@@ -132,7 +129,7 @@ cargo run --release --manifest-path road-schema/Cargo.toml -- \
   --tile-url-template 'https://tiles.example.com/game-roads/{z}/{x}/{y}.pbf'
 ```
 
-Or build a single-file PMTiles archive:
+Or build a PMTiles archive:
 
 ```bash
 cargo run --release --manifest-path road-schema/Cargo.toml -- \
@@ -141,7 +138,7 @@ cargo run --release --manifest-path road-schema/Cargo.toml -- \
   --output data/game-roads.pmtiles
 ```
 
-The current browser adapter accepts a vector TileJSON endpoint:
+Configure the browser to use XYZ/TileJSON output:
 
 ```bash
 VITE_GAME_ROADS_TILEJSON=https://tiles.example.com/game-roads/tilejson.json
@@ -149,60 +146,64 @@ VITE_GAME_ROADS_DEBUG=false
 npm run dev
 ```
 
-PMTiles is emitted as an alternative static delivery artifact; direct PMTiles loading in the browser can be added behind the same road-source adapter later. Without `VITE_GAME_ROADS_TILEJSON`, Mapshow disables simulation road surfaces rather than substituting OpenFreeMap's cartographic transportation layer.
+Direct PMTiles loading in the browser is not wired yet; PMTiles is currently an alternative static output artifact.
 
-## Browser game-road pipeline
+## Physics model
+
+Map rendering stays in Web Mercator. Physics does not.
+
+Mapshow uses a floating local physics frame:
+
+- `+X` east
+- `+Y` up
+- `+Z` north
+- units in metres
+
+The camera currently acts as a temporary player proxy. The origin rebases after roughly 400 m. Road and intersection collision bodies keep stable IDs and are added, replaced or removed from Rapier as the streamed road world changes.
+
+Rapier currently contains **static environment collision only**. There is no chassis or dynamic vehicle body yet.
+
+See [`docs/PHYSICS.md`](docs/PHYSICS.md) for the coordinate and collider lifecycle contract.
+
+## Building LODs
 
 ```text
-game_road MVT schema v3
-        │
-        ▼
-road-world assembler
-        ├─ group by segment_id
-        ├─ direction-preserving tile-fragment stitching
-        ├─ first_node / last_node topology
-        └─ directed road graph
-        │
-        ▼
-lane policy
-        ├─ left/right traffic placement
-        ├─ directed lane centerlines
-        ├─ geometric candidate connections
-        ├─ turn:lanes filtering
-        └─ simple via-node restriction filtering
-        │
-        ▼
-road profile + world geometry
-        ├─ ~8 m DEM samples
-        ├─ elevation smoothing / grade limiting
-        ├─ bridge/tunnel approach easing
-        ├─ metric carriageway strips
-        ├─ approach-shaped intersection polygons
-        └─ simplified collision triangle bodies
+LOD1  footprint → simple map extrusion
+LOD2  footprint + height → segmented/patterned façade
+LOD3  nearby footprint → generated windows, entrance and roof geometry
 ```
 
-## Scope boundary
+LOD3 is deliberately bounded to keep browser memory and GPU usage predictable.
 
-Mapshow now separates **candidate topology**, **legal lane connectivity**, and **collision geometry**. Simple via-node restrictions and turn-lane indications are enforced for the generic car policy, while conditional/via-way restrictions, signal phases, `change:lanes*`, and jurisdiction-specific rules remain explicit future policy layers.
+## Road policy and known limitations
 
-The collision world is deliberately physics-engine agnostic. It exposes coarse road/intersection triangle bodies but does not yet choose Rapier, Jolt, Bullet, or another vehicle-physics stack.
+Mapshow currently distinguishes raw topology, legal lane connectivity, rendered road geometry and collision geometry.
 
-Bridge and tunnel vertical positions remain improved visual/world approximations, not engineering survey geometry.
+Implemented policy includes `turn:lanes*` and simple unconditional via-node restriction relations. The following are preserved or planned rather than guessed:
 
-## Roadmap
+- conditional restrictions;
+- via-way restrictions;
+- traffic-signal phases;
+- `change:lanes*` enforcement;
+- jurisdiction-specific driving rules;
+- full route search;
+- exact surveyed bridge/tunnel elevations.
 
-1. Map foundation — complete.
-2. Procedural building LOD2 — complete.
-3. Procedural building LOD3 — complete.
-4. Bounded building streaming — complete.
-5. Real DEM terrain — complete.
-6. Dedicated game-road schema — complete.
-7. Topology-aware road graph and carriageway surfaces — complete.
-8. Road refinement: intersection polygons, lane centerlines/connectivity, grade smoothing and traffic side — complete.
-9. **Rust game-road generator + turn policy + simplified collision bodies — current.**
-10. Lane-change/signal policy, routing interface and floating-origin physics adapter.
-11. Vehicle controller, suspension/tire model and driving simulation.
+The DEM and OSM data are suitable for procedural world generation, not survey-grade engineering geometry.
 
-## Data and attribution
+## Project layout
 
-The Apache-2.0 licence in this repository applies to Mapshow's own source code. It does not relicense third-party map data, elevation data, styles, fonts, libraries or services. See [`THIRD_PARTY.md`](THIRD_PARTY.md).
+```text
+src/map/                 browser map/world modules
+road-schema/             Rust OSM → game-road tile generator
+docs/GAME_ROADS.md       game-road schema and generation details
+docs/PHYSICS.md          floating origin and Rapier boundary
+docs/ARCHITECTURE.md     broader system architecture
+THIRD_PARTY.md            data/software licensing and attribution
+```
+
+## Data and licensing
+
+Mapshow's own source code is Apache-2.0. OpenStreetMap data, OpenFreeMap/OpenMapTiles resources, elevation datasets and third-party libraries keep their own licences and attribution requirements.
+
+See [`THIRD_PARTY.md`](THIRD_PARTY.md).
