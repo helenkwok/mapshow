@@ -28,6 +28,8 @@ import {
 import type { DrivingSide } from "./map/road-lanes";
 import { buildRoadWorld, type RoadWorld } from "./map/road-world";
 import { RoadSurfaceLayer, type RoadSurfaceStats } from "./map/road-surface-layer";
+import { FloatingOriginController } from "./map/floating-origin";
+import { RoadPhysicsAdapter, type PhysicsSyncBatch } from "./map/physics-adapter";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const LOD3_MIN_ZOOM = 16.1;
@@ -37,6 +39,7 @@ const TERRAIN_EXAGGERATION = 1;
 const ROAD_SURFACE_MIN_ZOOM = 14.5;
 const ROAD_SURFACE_RADIUS_METERS = 650;
 const ROAD_SURFACE_MAX_SEGMENTS = 240;
+const PHYSICS_ORIGIN_SHIFT_METERS = 400;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -74,6 +77,8 @@ map.addControl(
 
 const buildingDetailLayer = new BuildingDetailLayer();
 const roadSurfaceLayer = new RoadSurfaceLayer();
+const floatingOrigin = new FloatingOriginController(PHYSICS_ORIGIN_SHIFT_METERS);
+const roadPhysics = new RoadPhysicsAdapter();
 let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
 let terrainEnabled = true;
@@ -82,6 +87,14 @@ let drivingSide: DrivingSide = DEFAULT_PRESET.drivingSide;
 let buildingMode: "procedural" | "style" | "none" = "none";
 let lastLod3Candidates = 0;
 let gameRoadSource: GameRoadSourceInstallation = { enabled: false, debugVisible: false };
+let physicsStats: PhysicsSyncBatch = {
+  originRevision: 0,
+  created: [],
+  updated: [],
+  removed: [],
+  activeColliders: 0,
+  triangleCount: 0,
+};
 let roadStats: RoadSurfaceStats = {
   activeSegments: 0,
   graphNodes: 0,
@@ -221,6 +234,11 @@ function refreshLod3Stream(): void {
 function refreshRoadSurfaces(): void {
   const world = collectRoadWorld();
   roadStats = roadSurfaceLayer.setWorld(world, map, terrainEnabled, drivingSide);
+
+  const center = map.getCenter();
+  const anchor: LngLatTuple = [center.lng, center.lat];
+  const originUpdate = floatingOrigin.update(anchor, terrainGroundElevation(anchor));
+  physicsStats = roadPhysics.sync(roadSurfaceLayer.getCollisionWorld(), originUpdate.frame);
 }
 
 function updateStatus(): void {
@@ -238,7 +256,7 @@ function updateStatus(): void {
   const roads = !gameRoadSource.enabled
     ? " · game roads unconfigured"
     : roadStats.activeSegments > 0
-      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · legal turns ${roadStats.laneConnections}/${roadStats.candidateLaneConnections} · collision ${roadStats.collisionBodies} bodies · ${drivingSide}-traffic`
+      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · legal turns ${roadStats.laneConnections}/${roadStats.candidateLaneConnections} · collision ${roadStats.collisionBodies} bodies · physics ${physicsStats.activeColliders} local · origin r${physicsStats.originRevision} · ${drivingSide}-traffic`
       : roadSurfacesEnabled && zoom >= ROAD_SURFACE_MIN_ZOOM
         ? " · game roads loading"
         : "";
@@ -294,8 +312,18 @@ terrainToggle.addEventListener("click", () => {
 roadsToggle.addEventListener("click", () => {
   if (!gameRoadSource.enabled) return;
   roadSurfacesEnabled = !roadSurfacesEnabled;
-  if (!roadSurfacesEnabled) roadSurfaceLayer.clear();
-  else refreshRoadSurfaces();
+  if (!roadSurfacesEnabled) {
+    roadSurfaceLayer.clear();
+    roadPhysics.clear();
+    physicsStats = {
+      ...physicsStats,
+      created: [],
+      updated: [],
+      removed: [],
+      activeColliders: 0,
+      triangleCount: 0,
+    };
+  } else refreshRoadSurfaces();
   updateRoadButton();
   updateStatus();
 });
@@ -310,6 +338,7 @@ trafficToggle.addEventListener("click", () => {
 resetView.addEventListener("click", () => {
   buildingDetailLayer.clear();
   roadSurfaceLayer.clear();
+  roadPhysics.clear();
   lastLod3Candidates = 0;
   drivingSide = DEFAULT_PRESET.drivingSide;
   updateTrafficButton();
@@ -331,6 +360,7 @@ presetButtons.addEventListener("click", (event) => {
 
   buildingDetailLayer.clear();
   roadSurfaceLayer.clear();
+  roadPhysics.clear();
   lastLod3Candidates = 0;
   drivingSide = preset.drivingSide;
   updateTrafficButton();
@@ -421,6 +451,11 @@ map.on("click", (event) => {
               intersectionPolygons: roadStats.intersectionPolygons,
               collisionBodies: roadStats.collisionBodies,
               collisionTriangles: roadStats.collisionTriangles,
+              physicsLocalColliders: physicsStats.activeColliders,
+              physicsTriangles: physicsStats.triangleCount,
+              floatingOriginRevision: physicsStats.originRevision,
+              floatingOriginThresholdMeters: PHYSICS_ORIGIN_SHIFT_METERS,
+              physicsCoordinateSystem: "x-east, y-up, z-north",
               drivingSide,
             }
           : "configure VITE_GAME_ROADS_TILEJSON to enable",
