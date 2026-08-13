@@ -46,6 +46,27 @@ jobs:
       - name: Compile and test Rust game-road generator
         run: cargo test --manifest-path road-schema/Cargo.toml --all-targets
 
+      - name: Download small real OSM extract
+        run: curl -fsSL --retry 3 https://download.geofabrik.de/europe/monaco-latest.osm.pbf -o /tmp/monaco.osm.pbf
+
+      - name: Build real XYZ MVT smoke output
+        run: |
+          cargo run --manifest-path road-schema/Cargo.toml -- \
+            build-xyz \
+            --input /tmp/monaco.osm.pbf \
+            --output-dir /tmp/game-roads \
+            --tile-url-template 'https://example.invalid/game-roads/{z}/{x}/{y}.pbf'
+          test -s /tmp/game-roads/tilejson.json
+          test -n "$(find /tmp/game-roads -name '*.pbf' -type f -size +0c -print -quit)"
+
+      - name: Build real PMTiles smoke output
+        run: |
+          cargo run --manifest-path road-schema/Cargo.toml -- \
+            build-pmtiles \
+            --input /tmp/monaco.osm.pbf \
+            --output /tmp/game-roads.pmtiles
+          test -s /tmp/game-roads.pmtiles
+
   road-schema-java-parity:
     runs-on: ubuntu-latest
     steps:
