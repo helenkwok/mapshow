@@ -15,6 +15,12 @@ export interface FloatingOriginUpdate {
   shiftDistanceMeters: number;
 }
 
+export interface LocalPhysicsPoint {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export const DEFAULT_ORIGIN_SHIFT_THRESHOLD_METERS = 400;
 
 function createFrame(
@@ -29,6 +35,20 @@ function createFrame(
     elevationMeters,
     mercator,
     meterScale: mercator.meterInMercatorCoordinateUnits(),
+  };
+}
+
+export function rebaseLocalPhysicsPoint(
+  point: LocalPhysicsPoint,
+  from: FloatingOriginFrame,
+  to: FloatingOriginFrame,
+): LocalPhysicsPoint {
+  const mercatorX = from.mercator.x + point.x * from.meterScale;
+  const mercatorY = from.mercator.y - point.z * from.meterScale;
+  return {
+    x: (mercatorX - to.mercator.x) / to.meterScale,
+    y: from.elevationMeters + point.y - to.elevationMeters,
+    z: -(mercatorY - to.mercator.y) / to.meterScale,
   };
 }
 
