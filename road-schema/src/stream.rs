@@ -448,8 +448,8 @@ fn usage_count(table: &impl ReadableTable<u64, u64>, node_id: i64) -> Result<u64
         .unwrap_or(0))
 }
 
-fn node_coordinate<'a>(
-    table: &impl ReadableTable<u64, &'a [u8]>,
+fn node_coordinate(
+    table: &impl ReadableTable<u64, &'static [u8]>,
     node_id: i64,
 ) -> Result<(f64, f64)> {
     let value = table
