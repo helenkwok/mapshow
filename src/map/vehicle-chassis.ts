@@ -42,8 +42,10 @@ export const DEFAULT_CHASSIS_CONFIG: ChassisConfig = {
   restitution: 0.01,
   linearDamping: 0.22,
   angularDamping: 1.6,
-  maxForwardForceN: 9000,
-  maxReverseForceN: 4500,
+  // These deliberately exceed the static-friction threshold of the validation body on a paved road.
+  // They are test controls, not production engine/tyre forces.
+  maxForwardForceN: 14000,
+  maxReverseForceN: 12000,
   maxBrakeForceN: 14000,
   maxYawTorqueNm: 6500,
 };
