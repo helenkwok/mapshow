@@ -73,7 +73,9 @@ export function buildWheelDefinitions(
   const halfWheelbase = Math.max(0.9, chassis.lengthMeters / 2 - suspension.axleEndInsetMeters);
   const connectionY = -chassis.heightMeters / 2 + 0.06;
   const down = { x: 0, y: -1, z: 0 };
-  const axle = { x: 1, y: 0, z: 0 };
+  // Rapier derives the wheel's forward direction from contact normal × axle. With +Y up and Mapshow's +Z
+  // chassis-forward convention, the axle must point toward local -X so positive engine force moves +Z.
+  const axle = { x: -1, y: 0, z: 0 };
 
   return [
     {
