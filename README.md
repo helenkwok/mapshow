@@ -8,7 +8,7 @@ It combines:
 - **MapLibre GL JS** for map rendering and DEM terrain;
 - **Three.js** for close-range procedural buildings and road geometry;
 - a **Rust game-road generator** for topology-aware simulation tiles;
-- **Rapier 3D** for streamed static road/intersection collision bodies.
+- **Rapier 3D** for streamed road/intersection collision bodies and physics validation.
 
 Mapshow does not use Google Maps, commercial satellite imagery, or photogrammetry. It also does not contain source code or assets copied from MGame or Hop.Earth; those projects are architectural references only.
 
@@ -30,9 +30,10 @@ The current prototype has:
 - simplified road/intersection collision meshes;
 - a floating physics origin using local metres;
 - streamed Rapier static trimesh colliders;
-- optional Rapier collision debug rendering.
+- an optional Rapier collision debug overlay;
+- a minimal dynamic drop-probe for testing gravity, contact, collider streaming and floating-origin rebasing.
 
-There is **not yet a vehicle controller**. Suspension, tyre forces, throttle/braking and player driving are later milestones.
+There is **not yet a vehicle controller**. Suspension, tyre forces, throttle/braking, steering and player driving are later milestones.
 
 ## Quick start
 
@@ -57,6 +58,8 @@ npm run preview
 ```
 
 Without a configured game-road TileJSON endpoint, the map, terrain and buildings still work; simulation road surfaces and physics colliders remain disabled.
+
+When game-road tiles are configured and nearby road colliders are loaded, use **Drop physics probe** to spawn a small dynamic Rapier cuboid several metres above the nearest active road collider. The probe automatically enables the physics debug overlay so its fall and contact can be inspected.
 
 ## Architecture
 
@@ -105,6 +108,8 @@ Browser road-world assembler
              │
              ▼
           Rapier 3D
+     static road colliders
+       + dynamic probe
 ```
 
 The important separation is that **OpenFreeMap is the visual map layer**, while the Rust `game_road` tiles are a separate simulation-oriented dataset. Cartographic road tiles are not treated as physics-ready road geometry.
@@ -161,9 +166,9 @@ Mapshow uses a floating local physics frame:
 
 The camera currently acts as a temporary player proxy. The origin rebases after roughly 400 m. Road and intersection collision bodies keep stable IDs and are added, replaced or removed from Rapier as the streamed road world changes.
 
-Rapier currently contains **static environment collision only**. There is no chassis or dynamic vehicle body yet.
+The dynamic probe is deliberately simple: a small cuboid with gravity, mass, friction, low restitution and CCD. It is a validation instrument for road contacts and origin rebasing, not an early car model. When the floating origin moves, the probe is transformed into the new local frame while its physical velocity and orientation are preserved.
 
-See [`docs/PHYSICS.md`](docs/PHYSICS.md) for the coordinate and collider lifecycle contract.
+See [`docs/PHYSICS.md`](docs/PHYSICS.md) and [`docs/RAPIER.md`](docs/RAPIER.md) for the coordinate, collider and engine boundaries.
 
 ## Building LODs
 
@@ -197,9 +202,10 @@ The DEM and OSM data are suitable for procedural world generation, not survey-gr
 src/map/                 browser map/world modules
 road-schema/             Rust OSM → game-road tile generator
 docs/GAME_ROADS.md       game-road schema and generation details
-docs/PHYSICS.md          floating origin and Rapier boundary
+docs/PHYSICS.md          floating-origin and physics lifecycle
+docs/RAPIER.md           Rapier-specific integration notes
 docs/ARCHITECTURE.md     broader system architecture
-THIRD_PARTY.md            data/software licensing and attribution
+THIRD_PARTY.md           data/software licensing and attribution
 ```
 
 ## Data and licensing
