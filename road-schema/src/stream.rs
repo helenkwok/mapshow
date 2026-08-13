@@ -5,7 +5,9 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use osmpbf::{Element, ElementReader, RelMemberType};
 use pmtiles::{PmTilesWriter, TileCoord, TileType};
-use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
+use redb::{
+    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -194,10 +196,11 @@ fn pass_one_usage_and_restrictions(
                 let members = relation
                     .members()
                     .filter_map(|member| {
+                        let role = member.role().ok()?.to_owned();
                         Some(RestrictionMember {
                             member_type: restriction_member_type(member.member_type),
                             id: member.member_id,
-                            role: member.role().ok()?.to_owned(),
+                            role,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -445,7 +448,10 @@ fn usage_count(table: &impl ReadableTable<u64, u64>, node_id: i64) -> Result<u64
         .unwrap_or(0))
 }
 
-fn node_coordinate(table: &impl ReadableTable<u64, &[u8]>, node_id: i64) -> Result<(f64, f64)> {
+fn node_coordinate<'a>(
+    table: &impl ReadableTable<u64, &'a [u8]>,
+    node_id: i64,
+) -> Result<(f64, f64)> {
     let value = table
         .get(&(node_id as u64))?
         .ok_or_else(|| anyhow!("missing coordinate for referenced OSM node {node_id}"))?;
