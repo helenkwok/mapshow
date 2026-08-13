@@ -169,16 +169,15 @@ It should not be tuned to feel like a final car because its steering and propuls
 
 ## Testing
 
-Vitest locks the physics-boundary math without requiring a browser or live Rapier world:
+Vitest covers both pure contracts and the actual Rapier/WASM integration boundary:
 
 - `floating-origin.test.ts` checks rebase round trips and threshold behavior;
 - `physics-adapter.test.ts` checks collider creation, retention, replacement and removal;
 - `road-collision.test.ts` checks collision simplification/index generation;
-- `vehicle-chassis.test.ts` checks control clamping, orientation, thrust, yaw and braking math.
+- `vehicle-chassis.test.ts` checks control clamping, orientation, thrust, yaw and braking math;
+- `rapier-physics.test.ts` creates a real Rapier world, static road trimesh and dynamic chassis, then verifies falling contact and controlled forward motion.
 
-CI runs these tests before the TypeScript/Vite production build.
-
-Rapier integration itself remains additionally protected by strict TypeScript compilation. Future work should add dedicated deterministic Rapier integration tests once the dynamic API surface grows beyond the current probe/chassis validation layer.
+CI runs `npm test` before strict TypeScript/Vite production build checks. This means coordinate/collision logic can fail independently of compilation, while the Rapier integration test also catches runtime/WASM API behavior that TypeScript alone cannot validate.
 
 ## Current scope
 
@@ -191,7 +190,8 @@ Implemented:
 - dynamic drop probe;
 - minimal single-body chassis;
 - temporary direct chassis controls;
-- unit tests for the engine-neutral physics contracts and chassis actuation math.
+- unit tests for engine-neutral physics contracts and chassis actuation math;
+- a deterministic Rapier/WASM chassis contact/motion integration test.
 
 Not implemented yet:
 
