@@ -18,17 +18,19 @@ class RoadTagNormalizerTest {
   }
 
   @Test
-  void normalizesDrivingAndTopologyMetadata() {
+  void normalizesDrivingTopologyAndLanePolicyMetadata() {
     var attrs = RoadTagNormalizer.normalize(
-      Map.of(
-        "highway", "primary",
-        "name", "Main Road",
-        "lanes", "2",
-        "maxspeed", "50 mph",
-        "surface", "asphalt",
-        "bridge", "yes",
-        "layer", "1",
-        "oneway", "yes"
+      Map.ofEntries(
+        Map.entry("highway", "primary"),
+        Map.entry("name", "Main Road"),
+        Map.entry("lanes", "2"),
+        Map.entry("turn:lanes", "left|through;right"),
+        Map.entry("change:lanes", "not_right|yes"),
+        Map.entry("maxspeed", "50 mph"),
+        Map.entry("surface", "asphalt"),
+        Map.entry("bridge", "yes"),
+        Map.entry("layer", "1"),
+        Map.entry("oneway", "yes")
       ),
       1234L,
       10L,
@@ -36,10 +38,12 @@ class RoadTagNormalizerTest {
       7
     );
 
-    assertEquals(2, attrs.get("schema_version"));
+    assertEquals(3, attrs.get("schema_version"));
     assertEquals(1234L, attrs.get("osm_id"));
     assertEquals("primary", attrs.get("road_class"));
     assertEquals(2, attrs.get("lanes"));
+    assertEquals("left|through;right", attrs.get("turn_lanes_raw"));
+    assertEquals("not_right|yes", attrs.get("change_lanes_raw"));
     assertEquals(80.5, ((Number) attrs.get("speed_kmh")).doubleValue(), 0.05);
     assertEquals(6.8, ((Number) attrs.get("width_m")).doubleValue(), 0.05);
     assertEquals("lanes", attrs.get("width_source"));
