@@ -63,9 +63,15 @@ Three.js is used for Mapshow's close-range procedural geometry and custom 3D map
 
 ## Rapier 3D
 
-Mapshow uses `@dimforge/rapier3d-compat` for browser physics. Rapier is distributed under the Apache-2.0 licence. The `-compat` package bundles the WebAssembly integration path used by the browser build.
+Mapshow uses `@dimforge/rapier3d-compat` for browser physics. Rapier is distributed under the Apache-2.0 licence. The `-compat` package provides the WebAssembly integration path used by the browser build.
 
-Rapier currently receives only Mapshow-generated static road and intersection trimesh colliders. Mapshow's OSM-derived collision geometry remains subject to the underlying OSM data obligations; using Rapier does not change those data-licence requirements.
+Rapier currently receives Mapshow-generated static road/intersection trimesh colliders and also runs Mapshow's local dynamic validation bodies (the drop probe and minimal single-body chassis). OSM-derived road/collision geometry remains subject to the underlying OSM data obligations; using Rapier does not change those data-licence requirements.
+
+## Browser test tooling
+
+Mapshow uses Vitest as a development/test dependency for the browser-world unit suite. Vitest is distributed under the MIT licence. Test tooling is not part of the generated OSM data product and does not change map/elevation data licensing obligations.
+
+The web dependency graph is defined by `package.json` and npm's resolved dependency metadata. Redistributed application bundles or development environments should retain notices required by their direct and transitive dependencies.
 
 ## MGame and Hop.Earth
 
