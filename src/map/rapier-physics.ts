@@ -96,11 +96,13 @@ export interface DynamicChassisState {
   linearVelocity?: LocalPhysicsPoint;
   angularVelocity?: LocalPhysicsPoint;
   speedMetersPerSecond: number;
-  vehicleSpeedMetersPerSecond: number;
+  // Optional for compatibility with existing UI placeholders that represent an inactive chassis. Active chassis
+  // states always populate these ray-cast vehicle diagnostics.
+  vehicleSpeedMetersPerSecond?: number;
   sleeping: boolean;
   contactPairs: number;
-  groundedWheels: number;
-  wheels: VehicleWheelState[];
+  groundedWheels?: number;
+  wheels?: VehicleWheelState[];
   ageSeconds: number;
   rebaseCount: number;
   controls: ChassisControls;
@@ -354,11 +356,8 @@ export class RapierPhysicsWorld {
       return {
         active: false,
         speedMetersPerSecond: 0,
-        vehicleSpeedMetersPerSecond: 0,
         sleeping: false,
         contactPairs: 0,
-        groundedWheels: 0,
-        wheels: [],
         ageSeconds: 0,
         rebaseCount: 0,
         controls: { ...ZERO_CHASSIS_CONTROLS },
