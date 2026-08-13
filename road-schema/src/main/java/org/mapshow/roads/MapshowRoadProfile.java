@@ -6,15 +6,23 @@ import com.onthegomap.planetiler.Profile;
 import com.onthegomap.planetiler.config.Arguments;
 import com.onthegomap.planetiler.reader.SourceFeature;
 import com.onthegomap.planetiler.reader.osm.OsmElement;
+import com.onthegomap.planetiler.reader.osm.OsmRelationInfo;
 import com.onthegomap.planetiler.reader.osm.OsmSourceFeature;
 import com.onthegomap.planetiler.reader.osm.SplitWay;
 import java.nio.file.Path;
+import java.util.List;
 
 /** Generates a simulation-oriented road vector-tile layer from OpenStreetMap ways. */
 public final class MapshowRoadProfile implements Profile {
   public static final String LAYER = "game_road";
   public static final int MIN_ZOOM = 12;
   public static final int MAX_ZOOM = 16;
+
+  @Override
+  public List<OsmRelationInfo> preprocessOsmRelation(OsmElement.Relation relation) {
+    TurnRestrictionInfo restriction = TurnRestrictionInfo.fromRelation(relation);
+    return restriction == null ? null : List.of(restriction);
+  }
 
   @Override
   public boolean splitOsmWayAtIntersections(OsmElement.Way way) {
@@ -40,6 +48,13 @@ public final class MapshowRoadProfile implements Profile {
     );
     attributes.put("segment_id", splitWay.uniqueId());
 
+    String restrictions = TurnRestrictionInfo.encodeForFromWay(
+      sourceFeature.relationInfo(TurnRestrictionInfo.class)
+    );
+    if (!"[]".equals(restrictions)) {
+      attributes.put("turn_restrictions", restrictions);
+    }
+
     var road = features.splitLine(LAYER, true)
       .setZoomRange(MIN_ZOOM, MAX_ZOOM)
       // Simulation input: retain short intersection-to-intersection segments and source vertices.
@@ -60,7 +75,7 @@ public final class MapshowRoadProfile implements Profile {
 
   @Override
   public String description() {
-    return "OpenStreetMap roads split at shared OSM intersections with simulation-oriented identity, dimensions, access and vertical-layer metadata";
+    return "OpenStreetMap roads split at shared intersections with simulation-oriented geometry, lane semantics and turn restrictions";
   }
 
   @Override
