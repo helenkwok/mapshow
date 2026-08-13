@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use mapshow_road_schema::{read_road_dataset, write_pmtiles, write_xyz_tiles};
+use mapshow_road_schema::{
+    read_road_dataset, write_pmtiles_streaming, write_xyz_streaming,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "mapshow-roadgen")]
@@ -22,13 +24,14 @@ enum Command {
         input: PathBuf,
     },
     /// Emit intersection-split schema-v3 road segments as newline-delimited JSON.
+    /// This debug command is intentionally in-memory; production builds use disk-backed streaming.
     ExtractJson {
         #[arg(long)]
         input: PathBuf,
         #[arg(long)]
         output: PathBuf,
     },
-    /// Build static XYZ Mapbox Vector Tiles plus tilejson.json.
+    /// Build static XYZ Mapbox Vector Tiles plus tilejson.json using disk-backed scratch state.
     BuildXyz {
         #[arg(long)]
         input: PathBuf,
@@ -40,7 +43,7 @@ enum Command {
         )]
         tile_url_template: String,
     },
-    /// Build a single-file PMTiles v3 archive containing MVT game-road tiles.
+    /// Build a single-file PMTiles v3 archive using disk-backed scratch state.
     BuildPmtiles {
         #[arg(long)]
         input: PathBuf,
@@ -71,15 +74,13 @@ fn extract_json(input: PathBuf, output: PathBuf) -> Result<()> {
 }
 
 fn build_xyz(input: PathBuf, output_dir: PathBuf, tile_url_template: String) -> Result<()> {
-    let dataset = read_road_dataset(&input)?;
-    let summary = write_xyz_tiles(&dataset, &output_dir, &tile_url_template)?;
+    let summary = write_xyz_streaming(&input, &output_dir, &tile_url_template)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
 
 fn build_pmtiles(input: PathBuf, output: PathBuf) -> Result<()> {
-    let dataset = read_road_dataset(&input)?;
-    let summary = write_pmtiles(&dataset, &output)?;
+    let summary = write_pmtiles_streaming(&input, &output)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
