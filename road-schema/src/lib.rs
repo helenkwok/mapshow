@@ -4,16 +4,12 @@ pub mod pbf;
 pub mod restriction;
 pub mod schema;
 pub mod stream;
-pub mod tiles;
 
-pub use normalize::{is_game_road, normalize_road_tags, RoadAttributes, Tags};
-pub use pbf::{read_road_dataset, ExtractionSummary, LngLat, RoadDataset, RoadSegment};
+pub use normalize::{RoadAttributes, Tags, is_game_road, normalize_road_tags};
+pub use pbf::{ExtractionSummary, LngLat, RoadDataset, RoadSegment, read_road_dataset};
 pub use restriction::{
-    encode_restrictions_for_from_way, parse_restriction, RestrictionMember,
-    RestrictionMemberType, TurnRestriction,
+    RestrictionMember, RestrictionMemberType, TurnRestriction, encode_restrictions_for_from_way,
+    parse_restriction,
 };
 pub use schema::SCHEMA_VERSION;
-pub use stream::{
-    write_pmtiles_streaming, write_xyz_streaming, StreamingBuildSummary,
-};
-pub use tiles::{write_pmtiles, write_xyz_tiles, TileBuildSummary};
+pub use stream::{StreamingBuildSummary, write_pmtiles_streaming, write_xyz_streaming};
