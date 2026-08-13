@@ -87,8 +87,14 @@ let roadStats: RoadSurfaceStats = {
   graphNodes: 0,
   directedArcs: 0,
   activeLanes: 0,
+  candidateLaneConnections: 0,
   laneConnections: 0,
+  filteredByTurnLanes: 0,
+  filteredByRestrictions: 0,
+  unenforcedRestrictions: 0,
   intersectionPolygons: 0,
+  collisionBodies: 0,
+  collisionTriangles: 0,
   created: 0,
   replaced: 0,
   removed: 0,
@@ -232,7 +238,7 @@ function updateStatus(): void {
   const roads = !gameRoadSource.enabled
     ? " · game roads unconfigured"
     : roadStats.activeSegments > 0
-      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · junctions ${roadStats.intersectionPolygons} · ${drivingSide}-traffic`
+      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · legal turns ${roadStats.laneConnections}/${roadStats.candidateLaneConnections} · collision ${roadStats.collisionBodies} bodies · ${drivingSide}-traffic`
       : roadSurfacesEnabled && zoom >= ROAD_SURFACE_MIN_ZOOM
         ? " · game roads loading"
         : "";
@@ -407,8 +413,14 @@ map.on("click", (event) => {
               graphNodes: roadStats.graphNodes,
               directedArcs: roadStats.directedArcs,
               laneCenterlines: roadStats.activeLanes,
-              candidateLaneConnections: roadStats.laneConnections,
+              candidateLaneConnections: roadStats.candidateLaneConnections,
+              legalLaneConnections: roadStats.laneConnections,
+              filteredByTurnLanes: roadStats.filteredByTurnLanes,
+              filteredByRestrictions: roadStats.filteredByRestrictions,
+              preservedButUnenforcedRestrictions: roadStats.unenforcedRestrictions,
               intersectionPolygons: roadStats.intersectionPolygons,
+              collisionBodies: roadStats.collisionBodies,
+              collisionTriangles: roadStats.collisionTriangles,
               drivingSide,
             }
           : "configure VITE_GAME_ROADS_TILEJSON to enable",
