@@ -99,10 +99,7 @@ pub fn parse_restriction(
     })
 }
 
-pub fn encode_restrictions_for_from_way(
-    restrictions: &[TurnRestriction],
-    from_way: i64,
-) -> String {
+pub fn encode_restrictions_for_from_way(restrictions: &[TurnRestriction], from_way: i64) -> String {
     let encoded = restrictions
         .iter()
         .filter(|restriction| restriction.from_way == from_way)
@@ -179,7 +176,10 @@ mod tests {
             100,
             &tags(&[
                 ("type", "restriction"),
-                ("restriction:conditional", "no_left_turn @ (Mo-Fr 07:00-09:00)"),
+                (
+                    "restriction:conditional",
+                    "no_left_turn @ (Mo-Fr 07:00-09:00)",
+                ),
                 ("except", "bus;bicycle"),
             ]),
             &[
