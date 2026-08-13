@@ -3,6 +3,7 @@ pub mod normalize;
 pub mod pbf;
 pub mod restriction;
 pub mod schema;
+pub mod stream;
 pub mod tiles;
 
 pub use normalize::{is_game_road, normalize_road_tags, RoadAttributes, Tags};
@@ -12,4 +13,7 @@ pub use restriction::{
     RestrictionMemberType, TurnRestriction,
 };
 pub use schema::SCHEMA_VERSION;
+pub use stream::{
+    write_pmtiles_streaming, write_xyz_streaming, StreamingBuildSummary,
+};
 pub use tiles::{write_pmtiles, write_xyz_tiles, TileBuildSummary};
