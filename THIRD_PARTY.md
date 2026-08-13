@@ -59,7 +59,13 @@ MapLibre GL JS is used as the browser vector-map renderer and terrain renderer a
 
 ## Three.js
 
-Three.js is used by Mapshow's close-range LOD3 custom map layer for generated window, entrance and roof geometry. Three.js is distributed under the MIT licence. Mapshow does not bundle third-party building models or textures with this layer; its current LOD3 geometry is generated from map data at runtime.
+Three.js is used for Mapshow's close-range procedural geometry and custom 3D map layers. Three.js is distributed under the MIT licence. Mapshow does not bundle third-party building models or textures with its current procedural LOD3 layer.
+
+## Rapier 3D
+
+Mapshow uses `@dimforge/rapier3d-compat` for browser physics. Rapier is distributed under the Apache-2.0 licence. The `-compat` package bundles the WebAssembly integration path used by the browser build.
+
+Rapier currently receives only Mapshow-generated static road and intersection trimesh colliders. Mapshow's OSM-derived collision geometry remains subject to the underlying OSM data obligations; using Rapier does not change those data-licence requirements.
 
 ## MGame and Hop.Earth
 
