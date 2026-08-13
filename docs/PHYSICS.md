@@ -1,29 +1,29 @@
 # Physics architecture
 
-Mapshow keeps geographic rendering, collision generation and the physics engine separated.
+Mapshow keeps geographic rendering, collision generation, coordinate conversion and the physics engine separated.
 
 ## Coordinate boundary
 
-MapLibre renders the world in Web Mercator coordinates. Vehicle physics should not use planet-scale map coordinates, so Mapshow converts collision geometry into a floating local metre frame.
+MapLibre renders in Web Mercator. Rapier does not.
 
-Until a player vehicle exists, the camera centre acts as the player proxy. The default origin shifts after roughly 400 m.
-
-Physics axes are:
+Mapshow converts collision and dynamic-body positions into a floating local metre frame:
 
 - `+X`: east
 - `+Y`: up
 - `+Z`: north
 - units: metres
 
-Changing the floating origin does not rebuild OSM topology, lanes, road profiles or visual Three.js road meshes. Existing collision bodies are re-expressed in the new local frame and passed through the collider sync boundary.
+Until a real player vehicle owns the world origin, the camera centre acts as the player proxy. The default origin rebases after roughly 400 m.
 
-Dynamic bodies are handled separately: their local position is transformed from the old floating frame into the new one so the same physical world location is preserved across a rebase.
+Changing the floating origin does not rebuild OSM topology, lane policy, road profiles or visual Three.js road meshes. Static collision bodies are re-expressed through the adapter, while active dynamic-body positions are transformed into the new local frame so the same physical world location is preserved.
+
+Terrain on/off forces an origin reset because the local vertical datum depends on DEM elevation.
 
 ## Data flow
 
 ```text
 RoadCollisionWorld
-  geographic/MapLibre-local triangle bodies
+  renderer-independent triangle bodies
              │
              ▼
 RoadPhysicsAdapter
@@ -36,112 +36,170 @@ PhysicsSyncBatch
              ▼
 RapierPhysicsWorld
   streamed static trimesh colliders
-  + dynamic validation probe
+  + dynamic probe
+  + minimal chassis
 ```
 
 ## Modules
 
 ### `src/map/floating-origin.ts`
 
-Owns the geographic/local coordinate boundary:
+Owns:
 
 - current geographic anchor;
 - origin elevation;
 - Mercator coordinate and metres-to-Mercator scale;
 - origin revision;
 - distance-triggered rebasing;
-- local point transformation between floating-origin revisions.
+- local-point transformation between floating-origin revisions.
 
-It has no dependency on Rapier.
-
-### `src/map/physics-adapter.ts`
-
-Converts renderer-independent `RoadCollisionWorld` bodies into local static trimesh descriptors:
-
-- stable collider IDs;
-- X-east/Y-up/Z-north vertex coordinates;
-- created/updated/removed delta batches;
-- road/intersection metadata;
-- retransformation after an origin revision changes.
-
-This remains the engine-neutral contract.
-
-### `src/map/rapier-physics.ts`
-
-Consumes `PhysicsSyncBatch` and owns the Rapier world:
-
-- gravity uses local `-Y`;
-- one standalone static trimesh collider is created for each streamed road/intersection collision body;
-- collider IDs remain owned by Mapshow, while Rapier handles are internal;
-- streamed removals delete Rapier colliders;
-- updates replace colliders without changing the browser road-world contract;
-- friction is selected from the coarse road surface class;
-- the world advances at a fixed 1/60 s timestep with bounded catch-up;
-- one small dynamic validation cuboid can be spawned above the nearest active road collider;
-- the probe uses CCD and reports position, velocity, contact-pair count, sleeping state and rebase count;
-- probe position is transformed rather than respawned when the floating origin moves.
-
-The probe is not a vehicle or chassis model.
-
-### `src/map/rapier-debug-layer.ts`
-
-Provides an optional MapLibre/Three.js custom layer that renders Rapier's debug collision lines back in the geographic scene. It converts local physics axes back to the Mapshow rendering convention and applies the current floating-origin transform.
-
-With the dynamic probe active, the debug geometry is refreshed while the probe is moving.
+It has no Rapier dependency.
 
 ### `src/map/road-collision.ts`
 
-Remains the physics-engine-independent source of simplified road and intersection collision triangles.
+Produces simplified renderer-independent road/intersection collision triangles from the same vertical profiles used by road rendering.
 
-## Collider and dynamic-body lifecycle
+### `src/map/physics-adapter.ts`
 
-For each streamed road-world refresh:
+Converts `RoadCollisionWorld` into local static trimesh descriptors:
 
-1. `RoadSurfaceLayer` updates visible road/intersection geometry and `RoadCollisionWorld`;
-2. `FloatingOriginController` updates or retains the local frame;
-3. if the frame changed, the dynamic probe is transformed into the new local frame;
-4. `RoadPhysicsAdapter.sync()` returns created/updated/removed local collider descriptors;
-5. `RapierPhysicsWorld.sync()` applies that static-collider delta to Rapier;
-6. the optional debug layer reads Rapier debug geometry for visual verification.
+- stable collider IDs;
+- local metre vertices;
+- road/intersection metadata;
+- create/update/remove deltas;
+- full retransformation after an origin revision changes.
 
-A browser animation loop advances Rapier independently of map streaming. This means a dynamic probe keeps falling and settling even when no map tile or road-world update occurs.
+This is the physics-engine-neutral boundary.
 
-Turning road surfaces off clears both the engine-neutral collider cache and the Rapier world, including the probe.
+### `src/map/rapier-physics.ts`
 
-Terrain on/off forces a floating-origin reset so the local vertical datum cannot remain anchored to a stale DEM elevation. An active probe is transformed through that reset.
+Owns the Rapier world:
 
-## Dynamic probe workflow
+- gravity along local `-Y`;
+- one standalone static trimesh for each streamed road/intersection collision body;
+- coarse surface friction defaults;
+- fixed 1/60 s stepping with bounded catch-up;
+- dynamic drop probe;
+- minimal dynamic chassis;
+- dynamic-body rebasing;
+- contact and state reporting.
 
-When active road colliders exist, **Drop physics probe**:
+### `src/map/vehicle-chassis.ts`
 
-1. chooses the nearest active road collider in the local physics frame;
-2. finds an approximate horizontal centre and surface height;
-3. spawns a small cuboid roughly 6 m above it;
-4. enables the Rapier debug overlay;
-5. lets gravity/contact evolve under the fixed-step loop;
-6. reports probe height, speed, contacts, sleep state and origin-rebase count in the status line.
+Contains the testable, engine-independent **temporary chassis actuation math**.
 
-This is intended to expose missing road collision, intersection seams, unstable contacts, streamed-collider gaps and floating-origin mistakes before a vehicle is added.
+It currently defines:
+
+- chassis dimensions/mass and coarse material values;
+- control clamping;
+- body-forward extraction from a quaternion;
+- direct forward/reverse thrust;
+- direct braking force against horizontal velocity;
+- direct yaw torque.
+
+This direct actuation is intentionally temporary. The real vehicle model will replace it with forces generated by wheel/suspension/tyre contacts.
+
+### `src/map/rapier-debug-layer.ts`
+
+Renders Rapier debug lines back through MapLibre/Three.js using the current floating-origin transform.
+
+## Static collider lifecycle
+
+For each road-world refresh:
+
+1. `RoadSurfaceLayer` updates rendered road/intersection geometry and `RoadCollisionWorld`;
+2. `FloatingOriginController` retains or rebases the local frame;
+3. dynamic bodies are transformed if the frame changed;
+4. `RoadPhysicsAdapter.sync()` returns static collider deltas;
+5. `RapierPhysicsWorld.sync()` applies those deltas;
+6. the debug layer can render the resulting Rapier world.
+
+Turning simulation roads off clears both the adapter cache and Rapier static/dynamic state.
+
+## Fixed-step simulation
+
+A browser animation loop advances Rapier independently of map streaming.
+
+- physics step: 1/60 s;
+- elapsed browser time is accumulated;
+- catch-up substeps are bounded;
+- excess accumulated time is discarded after the cap rather than causing an unbounded stall spiral;
+- status/debug updates are throttled separately from physics stepping.
+
+This keeps dynamic bodies moving even if no map-source refresh occurs.
+
+## Dynamic drop probe
+
+**Drop physics probe** spawns a small cuboid about 6 m above the nearest active road collider.
+
+It is used to test:
+
+- gravity and road contact;
+- intersection seams;
+- bridge/tunnel continuity;
+- streamed collider boundaries;
+- terrain-mode changes;
+- floating-origin rebasing.
+
+The probe reports height, speed, contact count, sleep state, age and rebase count.
+
+## Minimal chassis
+
+**Spawn chassis** creates a separate single rigid-body test chassis near the nearest active road collider.
+
+Current test controls:
+
+```text
+W / S     temporary forward / reverse thrust
+A / D     temporary yaw torque
+Space     temporary direct braking
+```
+
+The body has a car-like mass and footprint, CCD, damping, friction and low restitution, but it has **no wheels or suspension**.
+
+The purpose is to validate:
+
+- persistent controlled dynamic motion;
+- collision continuity across road/intersection meshes;
+- static-collider streaming while a controlled body remains active;
+- dynamic-body preservation across floating-origin changes;
+- the control/state boundary that later wheel/suspension code will consume.
+
+It should not be tuned to feel like a final car because its steering and propulsion are intentionally non-physical placeholders.
+
+## Testing
+
+Vitest locks the physics-boundary math without requiring a browser or live Rapier world:
+
+- `floating-origin.test.ts` checks rebase round trips and threshold behavior;
+- `physics-adapter.test.ts` checks collider creation, retention, replacement and removal;
+- `road-collision.test.ts` checks collision simplification/index generation;
+- `vehicle-chassis.test.ts` checks control clamping, orientation, thrust, yaw and braking math.
+
+CI runs these tests before the TypeScript/Vite production build.
+
+Rapier integration itself remains additionally protected by strict TypeScript compilation. Future work should add dedicated deterministic Rapier integration tests once the dynamic API surface grows beyond the current probe/chassis validation layer.
 
 ## Current scope
 
 Implemented:
 
-- streamed road trimesh colliders;
-- streamed intersection trimesh colliders;
+- streamed road/intersection trimesh colliders;
 - floating-origin rebasing;
-- surface-class friction defaults;
-- debug collision overlay;
-- fixed-step Rapier simulation;
-- minimal dynamic contact/rebase probe.
+- fixed-step Rapier runtime;
+- physics debug overlay;
+- dynamic drop probe;
+- minimal single-body chassis;
+- temporary direct chassis controls;
+- unit tests for the engine-neutral physics contracts and chassis actuation math.
 
 Not implemented yet:
 
-- player chassis;
 - wheel/suspension model;
-- tyre friction/slip forces;
-- throttle/braking/steering;
-- collision filtering for dynamic traffic;
-- production tuning for sleeping, solver iterations or large numbers of dynamic bodies.
+- tyre friction/slip/contact forces;
+- production steering/throttle/brake behavior;
+- route/lane-following integration;
+- dynamic traffic collision filtering;
+- large-scale dynamic-body solver/sleeping tuning.
 
-The next vehicle milestone should begin only after the probe remains stable across road surfaces, generated intersections, streamed collider boundaries and origin rebases.
+The next vehicle milestone should replace direct chassis actuation with a first suspension/contact model rather than adding more tuning to the placeholder forces.
