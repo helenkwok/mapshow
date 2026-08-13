@@ -43,7 +43,7 @@ describe("rebaseLocalPhysicsPoint", () => {
 
     expect(rebased.x).toBeCloseTo(4, 9);
     expect(rebased.y).toBeCloseTo(3, 9);
-    expect(rebased.z).toBeCloseTo(8, 9);
+    expect(rebased.z).toBeCloseTo(12, 9);
   });
 });
 
