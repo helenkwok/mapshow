@@ -40,8 +40,8 @@ jobs:
         with:
           workspaces: road-schema -> target
 
-      - name: Format Rust sources during migration
-        run: cargo fmt --manifest-path road-schema/Cargo.toml --all
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path road-schema/Cargo.toml --all -- --check
 
       - name: Compile and test Rust game-road generator
         run: cargo test --manifest-path road-schema/Cargo.toml --all-targets
