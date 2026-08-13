@@ -1,7 +1,9 @@
+pub mod mvt;
 pub mod normalize;
 pub mod pbf;
 pub mod restriction;
 pub mod schema;
+pub mod tiles;
 
 pub use normalize::{is_game_road, normalize_road_tags, RoadAttributes, Tags};
 pub use pbf::{read_road_dataset, ExtractionSummary, LngLat, RoadDataset, RoadSegment};
@@ -10,3 +12,4 @@ pub use restriction::{
     RestrictionMemberType, TurnRestriction,
 };
 pub use schema::SCHEMA_VERSION;
+pub use tiles::{write_pmtiles, write_xyz_tiles, TileBuildSummary};
