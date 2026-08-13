@@ -8,10 +8,16 @@ import type { PhysicsSyncBatch, StaticTriMeshCollider } from "./physics-adapter"
 import {
   DEFAULT_CHASSIS_CONFIG,
   ZERO_CHASSIS_CONTROLS,
-  computeChassisActuation,
   normalizeChassisControls,
   type ChassisControls,
 } from "./vehicle-chassis";
+import {
+  DEFAULT_SUSPENSION_CONFIG,
+  buildWheelDefinitions,
+  computeRaycastVehicleActuation,
+  type VehicleWheelDefinition,
+  type WheelRole,
+} from "./vehicle-suspension";
 
 const GRAVITY = { x: 0, y: -9.81, z: 0 };
 const FIXED_TIMESTEP_SECONDS = 1 / 60;
@@ -22,6 +28,7 @@ const PROBE_MASS_KG = 50;
 type RapierWorld = InstanceType<(typeof RAPIER)["World"]>;
 type RapierCollider = ReturnType<RapierWorld["createCollider"]>;
 type RapierRigidBody = ReturnType<RapierWorld["createRigidBody"]>;
+type RapierVehicleController = ReturnType<RapierWorld["createVehicleController"]>;
 
 interface ActiveCollider {
   collider: RapierCollider;
@@ -38,6 +45,8 @@ interface DynamicProbe {
 interface DynamicChassis {
   body: RapierRigidBody;
   collider: RapierCollider;
+  vehicle: RapierVehicleController;
+  wheels: VehicleWheelDefinition[];
   spawnedAtSubstep: number;
   rebaseCount: number;
   controls: ChassisControls;
@@ -65,14 +74,35 @@ export interface DynamicProbeState {
   rebaseCount: number;
 }
 
+export interface VehicleWheelState {
+  index: number;
+  role: WheelRole;
+  steer: boolean;
+  drive: boolean;
+  inContact: boolean;
+  suspensionLengthMeters: number;
+  suspensionForceN: number;
+  steeringAngleRadians: number;
+  engineForceN: number;
+  brakeImpulse: number;
+  forwardImpulse: number;
+  sideImpulse: number;
+  contactPoint?: LocalPhysicsPoint;
+}
+
 export interface DynamicChassisState {
   active: boolean;
   position?: LocalPhysicsPoint;
   linearVelocity?: LocalPhysicsPoint;
   angularVelocity?: LocalPhysicsPoint;
   speedMetersPerSecond: number;
+  // Optional for compatibility with existing UI placeholders that represent an inactive chassis. Active chassis
+  // states always populate these ray-cast vehicle diagnostics.
+  vehicleSpeedMetersPerSecond?: number;
   sleeping: boolean;
   contactPairs: number;
+  groundedWheels?: number;
+  wheels?: VehicleWheelState[];
   ageSeconds: number;
   rebaseCount: number;
   controls: ChassisControls;
@@ -112,6 +142,8 @@ export class RapierPhysicsWorld {
     if (this.world) return;
     await RAPIER.init();
     this.world = new RAPIER.World(GRAVITY);
+    this.world.timestep = FIXED_TIMESTEP_SECONDS;
+    this.world.maxCcdSubsteps = 2;
   }
 
   sync(batch: PhysicsSyncBatch): RapierPhysicsStats {
@@ -184,6 +216,7 @@ export class RapierPhysicsWorld {
     this.removeChassis();
 
     const config = DEFAULT_CHASSIS_CONFIG;
+    const suspension = DEFAULT_SUSPENSION_CONFIG;
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(position.x, position.y, position.z)
@@ -204,13 +237,38 @@ export class RapierPhysicsWorld {
       body,
     );
 
+    const vehicle = this.world.createVehicleController(body);
+    vehicle.indexUpAxis = 1;
+    vehicle.setIndexForwardAxis = 2;
+    const wheels = buildWheelDefinitions(config, suspension);
+
+    for (const wheel of wheels) {
+      vehicle.addWheel(
+        wheel.chassisConnection,
+        wheel.suspensionDirection,
+        wheel.axleDirection,
+        suspension.suspensionRestLengthMeters,
+        suspension.wheelRadiusMeters,
+      );
+      vehicle.setWheelMaxSuspensionTravel(wheel.index, suspension.maxSuspensionTravelMeters);
+      vehicle.setWheelSuspensionStiffness(wheel.index, suspension.suspensionStiffness);
+      vehicle.setWheelSuspensionCompression(wheel.index, suspension.suspensionCompression);
+      vehicle.setWheelSuspensionRelaxation(wheel.index, suspension.suspensionRelaxation);
+      vehicle.setWheelMaxSuspensionForce(wheel.index, suspension.maxSuspensionForceN);
+      vehicle.setWheelFrictionSlip(wheel.index, suspension.frictionSlip);
+      vehicle.setWheelSideFrictionStiffness(wheel.index, suspension.sideFrictionStiffness);
+    }
+
     this.chassis = {
       body,
       collider,
+      vehicle,
+      wheels,
       spawnedAtSubstep: this.totalSubsteps,
       rebaseCount: 0,
       controls: { ...ZERO_CHASSIS_CONTROLS },
     };
+    this.applyVehicleControls();
     return this.getChassisState();
   }
 
@@ -221,7 +279,10 @@ export class RapierPhysicsWorld {
 
   removeChassis(): void {
     if (!this.chassis) return;
-    this.world?.removeRigidBody(this.chassis.body);
+    if (this.world) {
+      this.world.removeVehicleController(this.chassis.vehicle);
+      this.world.removeRigidBody(this.chassis.body);
+    }
     this.chassis = undefined;
   }
 
@@ -239,6 +300,8 @@ export class RapierPhysicsWorld {
       this.chassis.body.setTranslation(rebaseLocalPhysicsPoint(position, from, to), true);
       this.chassis.rebaseCount += 1;
     }
+
+    this.world.propagateModifiedBodyPositionsToColliders();
   }
 
   advance(elapsedSeconds: number): RapierPhysicsStats {
@@ -248,7 +311,7 @@ export class RapierPhysicsWorld {
     let substeps = 0;
 
     while (this.accumulatorSeconds >= FIXED_TIMESTEP_SECONDS && substeps < MAX_SUBSTEPS) {
-      this.applyChassisControls();
+      this.updateVehicleSuspension();
       this.world.step();
       this.accumulatorSeconds -= FIXED_TIMESTEP_SECONDS;
       substeps += 1;
@@ -304,6 +367,7 @@ export class RapierPhysicsWorld {
     const position = this.chassis.body.translation();
     const velocity = this.chassis.body.linvel();
     const angularVelocity = this.chassis.body.angvel();
+    const wheels = this.chassis.wheels.map((wheel) => this.wheelState(wheel));
     return {
       active: true,
       position: { x: position.x, y: position.y, z: position.z },
@@ -314,8 +378,11 @@ export class RapierPhysicsWorld {
         z: angularVelocity.z,
       },
       speedMetersPerSecond: Math.hypot(velocity.x, velocity.y, velocity.z),
+      vehicleSpeedMetersPerSecond: this.chassis.vehicle.currentVehicleSpeed(),
       sleeping: this.chassis.body.isSleeping(),
       contactPairs: this.contactPairCount(this.chassis.collider),
+      groundedWheels: wheels.filter((wheel) => wheel.inContact).length,
+      wheels,
       ageSeconds: (this.totalSubsteps - this.chassis.spawnedAtSubstep) * FIXED_TIMESTEP_SECONDS,
       rebaseCount: this.chassis.rebaseCount,
       controls: { ...this.chassis.controls },
@@ -350,21 +417,82 @@ export class RapierPhysicsWorld {
     return this.world !== undefined;
   }
 
-  private applyChassisControls(): void {
+  private applyVehicleControls(): void {
     if (!this.chassis) return;
-    const body = this.chassis.body;
-    const actuation = computeChassisActuation(
-      body.rotation(),
-      body.linvel(),
+    const drivenWheelCount = this.chassis.wheels.filter((wheel) => wheel.drive).length;
+    const actuation = computeRaycastVehicleActuation(
       this.chassis.controls,
+      this.chassis.vehicle.currentVehicleSpeed(),
+      DEFAULT_SUSPENSION_CONFIG,
+      drivenWheelCount,
     );
 
-    // Rapier forces persist until reset. For this validation body we own the full actuation budget each
-    // substep; the later suspension/tire model will replace this direct force/torque path.
-    body.resetForces(true);
-    body.resetTorques(true);
-    body.addForce(actuation.force, true);
-    body.addTorque(actuation.torque, true);
+    for (const wheel of this.chassis.wheels) {
+      this.chassis.vehicle.setWheelSteering(
+        wheel.index,
+        wheel.steer ? actuation.steeringAngleRadians : 0,
+      );
+      this.chassis.vehicle.setWheelEngineForce(
+        wheel.index,
+        wheel.drive ? actuation.engineForcePerDrivenWheelN : 0,
+      );
+      this.chassis.vehicle.setWheelBrake(
+        wheel.index,
+        wheel.brake ? actuation.brakeImpulsePerWheel : 0,
+      );
+    }
+  }
+
+  private updateVehicleSuspension(): void {
+    if (!this.chassis) return;
+    this.applyVehicleControls();
+    // Static road/intersection colliders are the intended wheel targets. Excluding dynamic colliders also keeps
+    // the ray-casts from seeing the diagnostic probe or the chassis itself.
+    this.chassis.vehicle.updateVehicle(
+      FIXED_TIMESTEP_SECONDS,
+      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
+    );
+  }
+
+  private wheelState(wheel: VehicleWheelDefinition): VehicleWheelState {
+    if (!this.chassis) {
+      return {
+        index: wheel.index,
+        role: wheel.role,
+        steer: wheel.steer,
+        drive: wheel.drive,
+        inContact: false,
+        suspensionLengthMeters: DEFAULT_SUSPENSION_CONFIG.suspensionRestLengthMeters,
+        suspensionForceN: 0,
+        steeringAngleRadians: 0,
+        engineForceN: 0,
+        brakeImpulse: 0,
+        forwardImpulse: 0,
+        sideImpulse: 0,
+      };
+    }
+
+    const vehicle = this.chassis.vehicle;
+    const contact = vehicle.wheelContactPoint(wheel.index);
+    return {
+      index: wheel.index,
+      role: wheel.role,
+      steer: wheel.steer,
+      drive: wheel.drive,
+      inContact: vehicle.wheelIsInContact(wheel.index),
+      suspensionLengthMeters:
+        vehicle.wheelSuspensionLength(wheel.index)
+        ?? DEFAULT_SUSPENSION_CONFIG.suspensionRestLengthMeters,
+      suspensionForceN: vehicle.wheelSuspensionForce(wheel.index) ?? 0,
+      steeringAngleRadians: vehicle.wheelSteering(wheel.index) ?? 0,
+      engineForceN: vehicle.wheelEngineForce(wheel.index) ?? 0,
+      brakeImpulse: vehicle.wheelBrake(wheel.index) ?? 0,
+      forwardImpulse: vehicle.wheelForwardImpulse(wheel.index) ?? 0,
+      sideImpulse: vehicle.wheelSideImpulse(wheel.index) ?? 0,
+      contactPoint: contact
+        ? { x: contact.x, y: contact.y, z: contact.z }
+        : undefined,
+    };
   }
 
   private contactPairCount(collider: RapierCollider): number {
