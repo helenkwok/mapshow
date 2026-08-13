@@ -51,7 +51,7 @@ npm install
 npm run dev
 ```
 
-Run browser/unit tests:
+Run browser/world tests:
 
 ```bash
 npm test
@@ -193,12 +193,13 @@ CI has two independent paths.
 
 ### Browser/world tests
 
-`npm test` uses Vitest to cover critical pure contracts including:
+`npm test` uses Vitest to cover both pure contracts and the actual Rapier/WASM boundary:
 
 - floating-origin frame changes and world-position preservation;
 - road collision strip generation and triangle accounting;
 - physics-adapter create/update/remove behavior;
-- minimal chassis control clamping, orientation and force calculation.
+- minimal chassis control clamping, orientation and force calculation;
+- a real Rapier world with a static road trimesh, a falling chassis, contact verification and controlled forward motion.
 
 `npm run build` separately runs strict TypeScript checking and the Vite production build.
 
@@ -228,7 +229,7 @@ The current DEM and OSM geometry are procedural world-generation inputs, not eng
 
 ```text
 src/map/                    browser map/world/physics modules
-src/map/*.test.ts           browser unit tests
+src/map/*.test.ts           browser unit + Rapier integration tests
 road-schema/                Rust OSM → game-road tile generator
 docs/ARCHITECTURE.md        system architecture
 docs/GAME_ROADS.md          road schema/generator/runtime details
