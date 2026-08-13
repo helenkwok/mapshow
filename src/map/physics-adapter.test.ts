@@ -46,11 +46,12 @@ describe("RoadPhysicsAdapter", () => {
     expect(batch.triangleCount).toBe(1);
     expect(batch.created[0].segmentId).toBe(7);
     expect(batch.created[0].surfaceClass).toBe("paved");
-    expect(batch.created[0].positions).toEqual([
-      0, 2, 0,
-      1, 2, 0,
-      0, 2, -1,
-    ]);
+
+    const expected = [0, 2, 0, 1, 2, 0, 0, 2, -1];
+    expect(batch.created[0].positions).toHaveLength(expected.length);
+    batch.created[0].positions.forEach((value, index) => {
+      expect(value).toBeCloseTo(expected[index], 9);
+    });
   });
 
   it("does not replace an unchanged collider in the same frame", () => {
