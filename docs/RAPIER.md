@@ -1,6 +1,6 @@
 # Rapier integration notes
 
-This file records the Mapshow-to-Rapier boundary so later vehicle work does not bypass the engine-neutral road/collision architecture.
+This file records the Mapshow-to-Rapier boundary so vehicle work does not bypass the engine-neutral road/collision architecture.
 
 ## Runtime package
 
@@ -10,16 +10,9 @@ Mapshow uses `@dimforge/rapier3d-compat` in the browser.
 
 ## Static world
 
-Each active road/intersection collision body becomes one standalone Rapier trimesh collider.
+Each active road/intersection collision body becomes one standalone Rapier trimesh collider. Stable Mapshow collider IDs are mapped to Rapier handles internally. Stream updates use create/update/remove deltas instead of rebuilding the whole physics world.
 
-Stable Mapshow collider IDs are mapped to Rapier handles internally. Stream updates use the adapter's create/update/remove delta rather than rebuilding the whole Rapier world.
-
-Current road material defaults:
-
-- paved: high friction;
-- unpaved: lower friction;
-- unknown: intermediate friction;
-- road restitution: zero.
+Current road material defaults use higher friction for paved roads, lower friction for unpaved roads and zero road restitution.
 
 ## Fixed-step simulation
 
@@ -29,35 +22,59 @@ Static road streaming is event-driven by map/world refreshes; dynamic-body stepp
 
 ## Dynamic probe
 
-The diagnostic probe is a small cuboid spawned about 6 m above the nearest active road collider.
+The diagnostic probe remains a small cuboid used to isolate raw collider/contact/rebase failures without vehicle complexity.
 
-It uses:
+## Raycast vehicle
 
-- fixed test mass;
-- moderate friction;
-- low restitution;
-- CCD;
-- contact-pair/sleep/speed/position reporting.
+The chassis now uses Rapier's `DynamicRayCastVehicleController` instead of applying direct force and yaw torque to the rigid body.
 
-Its purpose is to expose missing collision, seams, unstable contact, streaming gaps and origin-rebase errors without vehicle-control complexity.
+Configuration:
 
-## Minimal chassis
+- chassis mass: 1,200 kg validation body;
+- local up axis: `+Y`;
+- local forward axis: `+Z`;
+- four raycast wheels;
+- wheel suspension rays: local `-Y`;
+- wheel axle: local `-X`, which aligns positive engine force with Mapshow `+Z` forward;
+- front wheels steer;
+- rear wheels receive engine force;
+- all wheels receive brake impulse.
 
-Mapshow also has a separate single-body chassis validation object.
+Per-wheel tuning currently includes:
 
-The chassis uses a car-like footprint and 1,200 kg test mass with CCD, damping and coarse friction. It is controlled through direct rigid-body forces/torques:
+- wheel radius;
+- suspension rest length and maximum travel;
+- suspension stiffness;
+- compression and relaxation damping;
+- maximum suspension force;
+- friction slip;
+- side-friction stiffness.
 
-```text
-W / S     forward / reverse force
-A / D     yaw torque
-Space     braking force opposite horizontal velocity
-```
+Steering authority reduces with speed but retains a configurable minimum. Forward and reverse engine-force limits are configured separately and split across the driven wheels.
 
-The actuation math lives in `src/map/vehicle-chassis.ts`, not inside Rapier-specific code. `RapierPhysicsWorld` converts that result into `resetForces`, `resetTorques`, `addForce` and `addTorque` calls before each fixed substep.
+Before every Rapier world step, Mapshow:
 
-The temporary thrust values deliberately exceed the static-friction threshold of the validation chassis on a paved road so the control path is observable in tests. They are not intended to represent a production powertrain or tyre force budget.
+1. normalizes user controls;
+2. maps them to wheel steering, engine force and braking;
+3. calls `DynamicRayCastVehicleController.updateVehicle()`;
+4. excludes dynamic colliders from wheel ray queries, so the rays target the streamed static road/intersection world;
+5. advances Rapier by one fixed substep.
 
-This is intentionally a **validation chassis, not a car model**. The next real vehicle stage needs wheel/suspension/tyre contacts rather than more tuning of the direct rigid-body controls.
+## Wheel diagnostics
+
+`DynamicChassisState` exposes a grounded-wheel count and per-wheel diagnostics for active chassis states:
+
+- `wheelIsInContact`;
+- suspension length;
+- suspension force;
+- steering angle;
+- engine force;
+- brake impulse;
+- forward impulse;
+- side impulse;
+- contact point.
+
+These values are intended to make road seam, suspension-load and traction problems observable before a custom tyre model is introduced.
 
 ## Floating-origin rebasing
 
@@ -71,10 +88,12 @@ When the floating origin changes:
 
 - static road/intersection geometry is retransformed by `RoadPhysicsAdapter` and replaced as needed;
 - dynamic probe position is transformed into the new local frame;
-- dynamic chassis position is transformed into the new local frame;
-- velocity/orientation are kept rather than recreating the body.
+- chassis position is transformed into the new local frame;
+- chassis velocity/orientation and the vehicle controller remain active rather than respawning.
 
-Terrain mode changes force a frame reset for the same reason: the local Y datum is tied to DEM elevation.
+After a rebase, Rapier propagates the modified rigid-body transforms to attached colliders before further vehicle queries.
+
+Terrain mode changes force a frame reset because the local Y datum is tied to DEM elevation.
 
 ## Streaming order
 
@@ -85,38 +104,40 @@ For static collision:
 3. create new colliders;
 4. retain unchanged colliders.
 
-Dynamic bodies are separate from this static lifecycle and survive normal collider refreshes.
+Dynamic bodies and the raycast vehicle controller are separate from this static lifecycle and survive normal collider refreshes.
 
 ## Debugging
 
 The optional Rapier debug layer renders Rapier debug lines back through MapLibre using the current floating-origin transform.
 
-With probe/chassis bodies active, debug geometry refreshes while they are moving so static and dynamic collider alignment can be inspected together.
+The drop probe is still useful when debugging a road collider independently of the suspension system.
 
 ## Tests
 
-Vitest covers both the engine-independent contracts and a real Rapier/WASM integration path:
+Vitest covers both engine-independent contracts and real Rapier/WASM execution:
 
 - floating-origin coordinate transformations;
 - road collision geometry;
 - `PhysicsSyncBatch` lifecycle behavior;
-- chassis force/torque calculations;
-- a real Rapier world containing a static road trimesh and a dynamic chassis that must fall into contact and then move under throttle.
+- chassis configuration/control normalization;
+- wheel placement and control-to-wheel mapping;
+- a real four-wheel raycast suspension settling onto a static road trimesh;
+- forward wheel-driven motion while the wheels remain grounded.
 
-CI runs that suite before strict TypeScript/Vite compilation. The integration test exists specifically to catch runtime/WASM behavior that a successful typecheck cannot prove.
+CI runs the suite before strict TypeScript/Vite compilation.
 
-Future Rapier integration tests should extend this same layer for suspension contacts, chassis pose and origin rebasing once the suspension system exists.
+## Current boundary
 
-## Next physics milestone
+The raycast controller is the **first real suspension/contact layer**, but it is not automatically the final vehicle dynamics model.
 
-Do **not** spend the next milestone making the direct-force chassis feel like a polished car.
+Still open:
 
-The next useful step is a first wheel/suspension contact model that can validate:
+- custom tyre load/slip curves;
+- physical wheel bodies and wheel visual poses;
+- differential/gearing/powertrain behavior;
+- Ackermann/steering refinement;
+- surface-dependent tyre policy beyond coarse Rapier friction values;
+- route/lane-following integration;
+- dynamic traffic collision filtering.
 
-- suspension ray/contact distance;
-- spring/damper forces;
-- per-wheel ground contact on generated road/intersection trimeshes;
-- chassis pose over grades and seams;
-- origin rebasing while suspension is active.
-
-Tyre slip/friction, steering geometry and full vehicle controls should build on that contact model rather than on the temporary yaw/thrust forces.
+The next useful step is to evaluate the wheel contact/load/impulse data on real generated roads and decide what parts of the tyre model need to move beyond Rapier's built-in raycast vehicle behavior.
