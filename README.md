@@ -2,39 +2,36 @@
 
 Mapshow is an open-data browser prototype for turning global map data into a lightweight, driveable 3D world.
 
-It deliberately separates **visual mapping**, **simulation road data**, **procedural world geometry**, and **physics** so each layer can evolve independently.
+The project deliberately separates four concerns:
 
-## Current stack
+1. **Visual map** — OpenFreeMap/OpenStreetMap rendered by MapLibre GL JS.
+2. **World geometry** — procedural buildings, terrain-aware roads and intersections rendered with MapLibre/Three.js.
+3. **Simulation data** — a Rust-generated `game_road` tileset that preserves topology and driving metadata instead of treating cartographic roads as physics-ready geometry.
+4. **Physics** — a floating-origin local-metre world backed by Rapier 3D.
 
-- **OpenFreeMap / OpenStreetMap** — global visual basemap and building footprints.
-- **MapLibre GL JS** — map rendering and real DEM terrain.
-- **Three.js** — close-range procedural buildings, road surfaces and physics debug rendering.
-- **Rust `road-schema/`** — topology-aware OSM PBF → schema-v3 game-road MVT/PMTiles generator.
-- **Rapier 3D** — streamed static road/intersection collision plus dynamic validation bodies.
-
-Mapshow does not use Google Maps, commercial satellite imagery or photogrammetry. MGame and Hop.Earth are architectural references only; their code and assets are not copied into this repository.
+MGame and Hop.Earth are architectural references only. Their code and assets are not copied into this repository.
 
 ## What works now
 
-The browser prototype currently has:
+Mapshow currently includes:
 
 - global OpenFreeMap basemap;
 - real 3D terrain from Terrarium DEM tiles;
 - procedural building LOD1/LOD2/LOD3 with bounded nearby streaming;
-- a dedicated `game_road` vector-tile schema generated from OSM PBF in Rust;
+- Rust OSM PBF → schema-v3 game-road MVT/PMTiles generation;
 - road splitting at real shared OSM nodes;
 - directed road topology and lane centre-lines;
-- explicit left- and right-hand traffic placement;
+- left- and right-hand traffic placement;
 - `turn:lanes*` filtering and simple unconditional via-node OSM turn restrictions;
 - terrain-aware road profiles and generated intersection surfaces;
 - simplified road/intersection collision meshes;
 - a floating local physics frame in metres;
-- streamed Rapier static trimesh colliders;
+- streamed Rapier static road/intersection trimesh colliders;
 - optional Rapier collision debug rendering;
 - a dynamic drop probe for contact/rebase validation;
-- a **minimal single-body chassis** with temporary W/S thrust, A/D yaw torque and Space braking.
+- a **four-wheel Rapier raycast suspension chassis** with front steering, rear-wheel drive and all-wheel braking.
 
-The chassis is **not the final vehicle model**. There are no wheels, suspension, tyre slip forces or production driving dynamics yet. Direct force/torque controls exist only to validate persistent dynamic-body motion on the streamed road world before suspension and tyre physics are added.
+The vehicle is still a development model. The wheels are raycast contacts, not physical wheel rigid bodies, and Rapier's built-in wheel friction/slip behavior is being used as a first contact model rather than a final tyre simulation.
 
 ## Quick start
 
@@ -42,51 +39,44 @@ Requirements:
 
 - Node.js 22+
 - npm
-- Rust stable only if you want to generate game-road tiles
-
-Run the browser app:
+- Rust stable only if you want to generate `game_road` tiles
 
 ```bash
 npm install
 npm run dev
 ```
 
-Run browser/world tests:
+Tests and production build:
 
 ```bash
 npm test
-```
-
-Production build:
-
-```bash
 npm run build
 npm run preview
 ```
 
-Without `VITE_GAME_ROADS_TILEJSON`, the map, terrain and buildings still work. Simulation road surfaces and road physics remain disabled rather than silently using the cartographic road layer.
+Without `VITE_GAME_ROADS_TILEJSON`, the map, terrain and buildings still work. Simulation road surfaces and road physics remain disabled rather than silently falling back to the cartographic transportation layer.
 
 ## Browser controls
 
-The prototype UI provides:
+The UI provides:
 
 - location presets;
 - terrain and procedural-building toggles;
 - generated road-surface toggle;
-- manual left/right traffic selection;
+- left/right traffic selection;
 - Rapier debug overlay;
 - **Drop physics probe**;
 - **Spawn chassis**.
 
-When the minimal chassis is active:
+When the chassis is active:
 
 ```text
-W / S     temporary forward / reverse thrust
-A / D     temporary yaw torque
-Space     temporary direct braking force
+W / S     forward / reverse wheel engine force
+A / D     front-wheel steering
+Space     all-wheel brake
 ```
 
-These controls test rigid-body continuity only. They will be replaced by suspension/tyre-generated forces in the real vehicle model.
+These controls are for validating suspension/contact and streamed-world continuity. They are not yet a production powertrain, steering or tyre model.
 
 ## Architecture
 
@@ -135,23 +125,30 @@ Browser road-world assembler
              ▼
           Rapier 3D
      static road colliders
-       + probe + chassis
+             │
+       ┌─────┴─────┐
+       ▼           ▼
+   drop probe   raycast vehicle
+                 ├─ 4 wheel rays
+                 ├─ spring/damping
+                 ├─ front steering
+                 └─ rear drive
 ```
 
-The important separation is that **OpenFreeMap is the visual map layer**, while Rust-generated `game_road` tiles are a simulation dataset. Cartographic transportation tiles are never treated as physics-ready road geometry.
+The important boundary is that **OpenFreeMap is the visual map**, while Rust-generated `game_road` tiles are the simulation road dataset. Cartographic transportation tiles are never treated as collision-grade road geometry.
 
-See:
+Detailed docs:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system boundaries and data flow;
 - [`docs/GAME_ROADS.md`](docs/GAME_ROADS.md) — schema-v3 generator and browser road world;
 - [`docs/PHYSICS.md`](docs/PHYSICS.md) — floating-origin and dynamic-body lifecycle;
-- [`docs/RAPIER.md`](docs/RAPIER.md) — Rapier-specific integration details.
+- [`docs/RAPIER.md`](docs/RAPIER.md) — Rapier-specific integration and vehicle contact model.
 
 ## Generate game-road tiles
 
 `road-schema/` is a Rust binary/library using a multi-pass, disk-backed pipeline so large extracts do not require the whole road graph or all generated tiles in RAM.
 
-Run Rust tests:
+Run Rust checks:
 
 ```bash
 cargo fmt --manifest-path road-schema/Cargo.toml --all -- --check
@@ -177,7 +174,7 @@ cargo run --release --manifest-path road-schema/Cargo.toml -- \
   --output data/game-roads.pmtiles
 ```
 
-Configure the current browser runtime with the XYZ/TileJSON output:
+Configure the browser with XYZ/TileJSON output:
 
 ```bash
 VITE_GAME_ROADS_TILEJSON=https://tiles.example.com/game-roads/tilejson.json
@@ -187,19 +184,48 @@ npm run dev
 
 Direct PMTiles loading in the browser is not wired yet; PMTiles is currently an alternative static output artifact.
 
+## Physics and vehicle model
+
+Physics runs in a local floating frame rather than Web Mercator:
+
+```text
++X east
++Y up
++Z north
+units: metres
+```
+
+The camera is currently the floating-origin proxy. After roughly 400 m, static colliders are re-expressed in the new local frame and active dynamic bodies are transformed so their physical world location is preserved.
+
+The current chassis uses Rapier's `DynamicRayCastVehicleController`:
+
+- four wheel rays derived from chassis dimensions;
+- suspension rest length and bounded travel;
+- spring stiffness plus compression/relaxation damping;
+- maximum suspension force;
+- front-wheel steering with reduced authority at speed;
+- rear-wheel engine force;
+- all-wheel braking;
+- wheel friction/slip and side-friction tuning;
+- per-wheel contact, suspension length/force and impulse diagnostics.
+
+This is a much better contact model than applying force and yaw torque directly to the chassis, but it remains a validation stage. A later tyre model can use wheel load/contact data to implement more explicit longitudinal/lateral slip behavior.
+
 ## Testing
 
 CI has two independent paths.
 
 ### Browser/world tests
 
-`npm test` uses Vitest to cover both pure contracts and the actual Rapier/WASM boundary:
+`npm test` uses Vitest to cover:
 
 - floating-origin frame changes and world-position preservation;
-- road collision strip generation and triangle accounting;
-- physics-adapter create/update/remove behavior;
-- minimal chassis control clamping, orientation and force calculation;
-- a real Rapier world with a static road trimesh, a falling chassis, contact verification and controlled forward motion.
+- road collision simplification and mesh generation;
+- physics-adapter create/update/remove lifecycle;
+- chassis configuration and control normalization;
+- wheel layout and control-to-wheel mapping;
+- a real Rapier/WASM world where the four-wheel suspension settles onto a static road trimesh;
+- wheel-driven forward motion on that trimesh.
 
 `npm run build` separately runs strict TypeScript checking and the Vite production build.
 
@@ -218,8 +244,8 @@ Mapshow currently preserves or postpones rather than guesses several systems:
 - route search and lane following;
 - direct PMTiles loading in the browser;
 - survey-grade bridge/tunnel elevations;
-- wheel/suspension dynamics;
-- tyre friction/slip forces;
+- physical wheel rigid bodies and wheel-to-visual animation;
+- custom tyre load/slip curves and drivetrain modeling;
 - production throttle/brake/steering behavior;
 - dynamic traffic and collision filtering.
 
@@ -228,14 +254,16 @@ The current DEM and OSM geometry are procedural world-generation inputs, not eng
 ## Project layout
 
 ```text
-src/map/                    browser map/world/physics modules
-src/map/*.test.ts           browser unit + Rapier integration tests
-road-schema/                Rust OSM → game-road tile generator
-docs/ARCHITECTURE.md        system architecture
-docs/GAME_ROADS.md          road schema/generator/runtime details
-docs/PHYSICS.md             floating-origin and physics lifecycle
-docs/RAPIER.md              Rapier integration notes
-THIRD_PARTY.md              data/software licensing and attribution
+src/map/                       browser map/world/physics modules
+src/map/vehicle-chassis.ts    chassis dimensions + control contract
+src/map/vehicle-suspension.ts raycast wheel/suspension configuration
+src/map/*.test.ts             browser unit + Rapier integration tests
+road-schema/                  Rust OSM → game-road tile generator
+docs/ARCHITECTURE.md          system architecture
+docs/GAME_ROADS.md            road schema/generator/runtime details
+docs/PHYSICS.md               floating-origin and physics lifecycle
+docs/RAPIER.md                Rapier integration notes
+THIRD_PARTY.md                 data/software licensing and attribution
 ```
 
 ## Data and licensing
