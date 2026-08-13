@@ -53,7 +53,7 @@ final class RoadTagNormalizer {
     boolean tunnel = flag(tags, "tunnel");
     int layer = integer(tags, "layer") == null ? 0 : integer(tags, "layer");
 
-    out.put("schema_version", 2);
+    out.put("schema_version", 3);
     out.put("osm_id", osmId);
     out.put("highway", highway);
     out.put("road_class", roadClass);
@@ -85,6 +85,12 @@ final class RoadTagNormalizer {
     copyRaw(tags, out, "lanes", "lanes_raw");
     copyRaw(tags, out, "lanes:forward", "lanes_forward_raw");
     copyRaw(tags, out, "lanes:backward", "lanes_backward_raw");
+    copyRaw(tags, out, "turn:lanes", "turn_lanes_raw");
+    copyRaw(tags, out, "turn:lanes:forward", "turn_lanes_forward_raw");
+    copyRaw(tags, out, "turn:lanes:backward", "turn_lanes_backward_raw");
+    copyRaw(tags, out, "change:lanes", "change_lanes_raw");
+    copyRaw(tags, out, "change:lanes:forward", "change_lanes_forward_raw");
+    copyRaw(tags, out, "change:lanes:backward", "change_lanes_backward_raw");
     copyRaw(tags, out, "maxspeed", "maxspeed_raw");
     copyRaw(tags, out, "maxspeed:forward", "maxspeed_forward_raw");
     copyRaw(tags, out, "maxspeed:backward", "maxspeed_backward_raw");
