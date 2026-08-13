@@ -30,6 +30,8 @@ import { buildRoadWorld, type RoadWorld } from "./map/road-world";
 import { RoadSurfaceLayer, type RoadSurfaceStats } from "./map/road-surface-layer";
 import { FloatingOriginController } from "./map/floating-origin";
 import { RoadPhysicsAdapter, type PhysicsSyncBatch } from "./map/physics-adapter";
+import { RapierPhysicsWorld, type RapierPhysicsStats } from "./map/rapier-physics";
+import { RapierDebugLayer } from "./map/rapier-debug-layer";
 
 const OPENFREEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const LOD3_MIN_ZOOM = 16.1;
@@ -43,9 +45,7 @@ const PHYSICS_ORIGIN_SHIFT_METERS = 400;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
-  if (!element) {
-    throw new Error(`Mapshow UI element not found: ${selector}`);
-  }
+  if (!element) throw new Error(`Mapshow UI element not found: ${selector}`);
   return element;
 }
 
@@ -55,6 +55,7 @@ const buildingsToggle = requiredElement<HTMLButtonElement>("#buildings-toggle");
 const terrainToggle = requiredElement<HTMLButtonElement>("#terrain-toggle");
 const roadsToggle = requiredElement<HTMLButtonElement>("#roads-toggle");
 const trafficToggle = requiredElement<HTMLButtonElement>("#traffic-toggle");
+const physicsDebugToggle = requiredElement<HTMLButtonElement>("#physics-debug-toggle");
 const resetView = requiredElement<HTMLButtonElement>("#reset-view");
 const presetButtons = requiredElement<HTMLDivElement>("#preset-buttons");
 
@@ -70,19 +71,19 @@ const map = new maplibregl.Map({
 });
 
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
-map.addControl(
-  new maplibregl.AttributionControl({ compact: true }),
-  "bottom-right",
-);
+map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
 
 const buildingDetailLayer = new BuildingDetailLayer();
 const roadSurfaceLayer = new RoadSurfaceLayer();
 const floatingOrigin = new FloatingOriginController(PHYSICS_ORIGIN_SHIFT_METERS);
 const roadPhysics = new RoadPhysicsAdapter();
+const rapierPhysics = new RapierPhysicsWorld();
+const rapierDebugLayer = new RapierDebugLayer(rapierPhysics);
 let buildingLayerIds: string[] = [];
 let buildingsVisible = true;
 let terrainEnabled = true;
 let roadSurfacesEnabled = true;
+let physicsDebugVisible = false;
 let drivingSide: DrivingSide = DEFAULT_PRESET.drivingSide;
 let buildingMode: "procedural" | "style" | "none" = "none";
 let lastLod3Candidates = 0;
@@ -94,6 +95,16 @@ let physicsStats: PhysicsSyncBatch = {
   removed: [],
   activeColliders: 0,
   triangleCount: 0,
+};
+let rapierStats: RapierPhysicsStats = {
+  initialized: false,
+  activeColliders: 0,
+  triangleCount: 0,
+  created: 0,
+  updated: 0,
+  removed: 0,
+  lastSubsteps: 0,
+  totalSubsteps: 0,
 };
 let roadStats: RoadSurfaceStats = {
   activeSegments: 0,
@@ -140,6 +151,14 @@ function updateTrafficButton(): void {
   trafficToggle.textContent = `Traffic: ${drivingSide}`;
 }
 
+function updatePhysicsDebugButton(): void {
+  physicsDebugToggle.disabled = !rapierStats.initialized;
+  physicsDebugToggle.setAttribute("aria-pressed", String(physicsDebugVisible));
+  physicsDebugToggle.textContent = rapierStats.initialized
+    ? `Physics debug: ${physicsDebugVisible ? "on" : "off"}`
+    : "Physics debug: loading";
+}
+
 function installWorldTerrain(): void {
   installTerrain(map, AWS_TERRARIUM_PROVIDER);
   setTerrainEnabled(map, terrainEnabled, TERRAIN_EXAGGERATION);
@@ -148,9 +167,8 @@ function installWorldTerrain(): void {
 function installGameRoadWorld(): void {
   gameRoadSource = installGameRoadSource(map);
   const firstSymbolLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
-  if (!map.getLayer(roadSurfaceLayer.id)) {
-    map.addLayer(roadSurfaceLayer, firstSymbolLayer);
-  }
+  if (!map.getLayer(roadSurfaceLayer.id)) map.addLayer(roadSurfaceLayer, firstSymbolLayer);
+  if (!map.getLayer(rapierDebugLayer.id)) map.addLayer(rapierDebugLayer, firstSymbolLayer);
   updateRoadButton();
 }
 
@@ -161,13 +179,22 @@ function installBuildingLayers(): void {
   setBuildingLayersVisible(map, buildingLayerIds, buildingsVisible);
 
   const firstSymbolLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
-  if (!map.getLayer(buildingDetailLayer.id)) {
-    map.addLayer(buildingDetailLayer, firstSymbolLayer);
-  }
+  if (!map.getLayer(buildingDetailLayer.id)) map.addLayer(buildingDetailLayer, firstSymbolLayer);
 }
 
 function terrainGroundElevation(center: LngLatTuple): number {
   return terrainEnabled ? terrainElevationAt(map, center) : 0;
+}
+
+function cameraAnchor(): LngLatTuple {
+  const center = map.getCenter();
+  return [center.lng, center.lat];
+}
+
+function resetFloatingOrigin(): void {
+  const anchor = cameraAnchor();
+  const frame = floatingOrigin.reset(anchor, terrainGroundElevation(anchor));
+  rapierDebugLayer.setFrame(frame);
 }
 
 function collectLod3Candidates(): BuildingCandidate[] {
@@ -180,8 +207,7 @@ function collectLod3Candidates(): BuildingCandidate[] {
     return [];
   }
 
-  const center = map.getCenter();
-  const cameraCenter: LngLatTuple = [center.lng, center.lat];
+  const cameraCenter = cameraAnchor();
   const deduplicated = new Map<string, BuildingCandidate>();
 
   for (const feature of map.queryRenderedFeatures()) {
@@ -190,9 +216,7 @@ function collectLod3Candidates(): BuildingCandidate[] {
     if (!candidate || candidate.distanceMeters > LOD3_RADIUS_METERS) continue;
     candidate.groundElevationMeters = terrainGroundElevation(candidate.center);
     const existing = deduplicated.get(candidate.key);
-    if (!existing || candidate.ring.length > existing.ring.length) {
-      deduplicated.set(candidate.key, candidate);
-    }
+    if (!existing || candidate.ring.length > existing.ring.length) deduplicated.set(candidate.key, candidate);
   }
 
   return [...deduplicated.values()]
@@ -212,8 +236,7 @@ function collectRoadWorld(): RoadWorld {
     return emptyRoadWorld();
   }
 
-  const center = map.getCenter();
-  const cameraCenter: LngLatTuple = [center.lng, center.lat];
+  const cameraCenter = cameraAnchor();
   const features = map.querySourceFeatures(GAME_ROAD_SOURCE_ID, {
     sourceLayer: GAME_ROAD_SOURCE_LAYER,
   });
@@ -235,10 +258,26 @@ function refreshRoadSurfaces(): void {
   const world = collectRoadWorld();
   roadStats = roadSurfaceLayer.setWorld(world, map, terrainEnabled, drivingSide);
 
-  const center = map.getCenter();
-  const anchor: LngLatTuple = [center.lng, center.lat];
+  const anchor = cameraAnchor();
   const originUpdate = floatingOrigin.update(anchor, terrainGroundElevation(anchor));
   physicsStats = roadPhysics.sync(roadSurfaceLayer.getCollisionWorld(), originUpdate.frame);
+  rapierStats = rapierPhysics.sync(physicsStats);
+  rapierDebugLayer.setFrame(originUpdate.frame);
+  if (physicsDebugVisible) rapierDebugLayer.refresh();
+}
+
+function clearPhysics(): void {
+  roadPhysics.clear();
+  rapierStats = rapierPhysics.clear();
+  physicsStats = {
+    ...physicsStats,
+    created: [],
+    updated: [],
+    removed: [],
+    activeColliders: 0,
+    triangleCount: 0,
+  };
+  rapierDebugLayer.refresh();
 }
 
 function updateStatus(): void {
@@ -256,23 +295,36 @@ function updateStatus(): void {
   const roads = !gameRoadSource.enabled
     ? " · game roads unconfigured"
     : roadStats.activeSegments > 0
-      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · legal turns ${roadStats.laneConnections}/${roadStats.candidateLaneConnections} · collision ${roadStats.collisionBodies} bodies · physics ${physicsStats.activeColliders} local · origin r${physicsStats.originRevision} · ${drivingSide}-traffic`
+      ? ` · roads ${roadStats.activeSegments}/${ROAD_SURFACE_MAX_SEGMENTS} · lanes ${roadStats.activeLanes} · legal turns ${roadStats.laneConnections}/${roadStats.candidateLaneConnections} · Rapier ${rapierStats.activeColliders} colliders/${rapierStats.triangleCount} tris · origin r${physicsStats.originRevision} · ${drivingSide}-traffic`
       : roadSurfacesEnabled && zoom >= ROAD_SURFACE_MIN_ZOOM
         ? " · game roads loading"
         : "";
-  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${terrain}${detail}${roads}`;
+  const physics = rapierStats.initialized ? " · physics ready" : " · physics loading";
+  status.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · z${zoom.toFixed(1)}${terrain}${detail}${roads}${physics}`;
 }
 
-map.on("load", () => {
+map.on("load", async () => {
   installWorldTerrain();
   installGameRoadWorld();
   installBuildingLayers();
-  refreshLod3Stream();
-  refreshRoadSurfaces();
   updateBuildingButton();
   updateTerrainButton();
   updateRoadButton();
   updateTrafficButton();
+  updatePhysicsDebugButton();
+  updateStatus();
+
+  try {
+    await rapierPhysics.init();
+    rapierStats = rapierPhysics.clear();
+    resetFloatingOrigin();
+  } catch (error) {
+    console.error("Rapier initialization failed", error);
+  }
+
+  refreshLod3Stream();
+  refreshRoadSurfaces();
+  updatePhysicsDebugButton();
   updateStatus();
 });
 
@@ -293,9 +345,7 @@ buildingsToggle.addEventListener("click", () => {
   if (!buildingsVisible) {
     buildingDetailLayer.clear();
     lastLod3Candidates = 0;
-  } else {
-    refreshLod3Stream();
-  }
+  } else refreshLod3Stream();
   updateBuildingButton();
   updateStatus();
 });
@@ -303,6 +353,7 @@ buildingsToggle.addEventListener("click", () => {
 terrainToggle.addEventListener("click", () => {
   terrainEnabled = !terrainEnabled;
   setTerrainEnabled(map, terrainEnabled, TERRAIN_EXAGGERATION);
+  resetFloatingOrigin();
   refreshLod3Stream();
   refreshRoadSurfaces();
   updateTerrainButton();
@@ -314,15 +365,7 @@ roadsToggle.addEventListener("click", () => {
   roadSurfacesEnabled = !roadSurfacesEnabled;
   if (!roadSurfacesEnabled) {
     roadSurfaceLayer.clear();
-    roadPhysics.clear();
-    physicsStats = {
-      ...physicsStats,
-      created: [],
-      updated: [],
-      removed: [],
-      activeColliders: 0,
-      triangleCount: 0,
-    };
+    clearPhysics();
   } else refreshRoadSurfaces();
   updateRoadButton();
   updateStatus();
@@ -335,10 +378,18 @@ trafficToggle.addEventListener("click", () => {
   updateStatus();
 });
 
+physicsDebugToggle.addEventListener("click", () => {
+  if (!rapierStats.initialized) return;
+  physicsDebugVisible = !physicsDebugVisible;
+  rapierDebugLayer.setEnabled(physicsDebugVisible);
+  updatePhysicsDebugButton();
+  updateStatus();
+});
+
 resetView.addEventListener("click", () => {
   buildingDetailLayer.clear();
   roadSurfaceLayer.clear();
-  roadPhysics.clear();
+  clearPhysics();
   lastLod3Candidates = 0;
   drivingSide = DEFAULT_PRESET.drivingSide;
   updateTrafficButton();
@@ -360,7 +411,7 @@ presetButtons.addEventListener("click", (event) => {
 
   buildingDetailLayer.clear();
   roadSurfaceLayer.clear();
-  roadPhysics.clear();
+  clearPhysics();
   lastLod3Candidates = 0;
   drivingSide = preset.drivingSide;
   updateTrafficButton();
@@ -398,11 +449,8 @@ map.on("click", (event) => {
 
   const properties = (building.properties ?? {}) as Record<string, unknown>;
   const profile = buildingProfileFromProperties(properties);
-  const center = map.getCenter();
-  const candidate = candidateFromFeature(building, [center.lng, center.lat]);
-  if (candidate) {
-    candidate.groundElevationMeters = terrainGroundElevation(candidate.center);
-  }
+  const candidate = candidateFromFeature(building, cameraAnchor());
+  if (candidate) candidate.groundElevationMeters = terrainGroundElevation(candidate.center);
   const usefulProperties = Object.fromEntries(
     [
       "name",
@@ -456,6 +504,10 @@ map.on("click", (event) => {
               floatingOriginRevision: physicsStats.originRevision,
               floatingOriginThresholdMeters: PHYSICS_ORIGIN_SHIFT_METERS,
               physicsCoordinateSystem: "x-east, y-up, z-north",
+              rapierInitialized: rapierStats.initialized,
+              rapierColliders: rapierStats.activeColliders,
+              rapierTriangles: rapierStats.triangleCount,
+              rapierDebugVisible: physicsDebugVisible,
               drivingSide,
             }
           : "configure VITE_GAME_ROADS_TILEJSON to enable",
@@ -467,7 +519,12 @@ map.on("click", (event) => {
   );
 });
 
+window.addEventListener("beforeunload", () => {
+  rapierPhysics.dispose();
+});
+
 updateBuildingButton();
 updateTerrainButton();
 updateRoadButton();
 updateTrafficButton();
+updatePhysicsDebugButton();
