@@ -1,16 +1,31 @@
 import RAPIER from "@dimforge/rapier3d-compat";
+import {
+  rebaseLocalPhysicsPoint,
+  type FloatingOriginFrame,
+  type LocalPhysicsPoint,
+} from "./floating-origin";
 import type { PhysicsSyncBatch, StaticTriMeshCollider } from "./physics-adapter";
 
 const GRAVITY = { x: 0, y: -9.81, z: 0 };
 const FIXED_TIMESTEP_SECONDS = 1 / 60;
 const MAX_SUBSTEPS = 4;
+const PROBE_HALF_EXTENT_METERS = 0.45;
+const PROBE_MASS_KG = 50;
 
 type RapierWorld = InstanceType<(typeof RAPIER)["World"]>;
 type RapierCollider = ReturnType<RapierWorld["createCollider"]>;
+type RapierRigidBody = ReturnType<RapierWorld["createRigidBody"]>;
 
 interface ActiveCollider {
   collider: RapierCollider;
   triangleCount: number;
+}
+
+interface DynamicProbe {
+  body: RapierRigidBody;
+  collider: RapierCollider;
+  spawnedAtSubstep: number;
+  rebaseCount: number;
 }
 
 export interface RapierPhysicsStats {
@@ -22,6 +37,17 @@ export interface RapierPhysicsStats {
   removed: number;
   lastSubsteps: number;
   totalSubsteps: number;
+}
+
+export interface DynamicProbeState {
+  active: boolean;
+  position?: LocalPhysicsPoint;
+  linearVelocity?: LocalPhysicsPoint;
+  speedMetersPerSecond: number;
+  sleeping: boolean;
+  contactPairs: number;
+  ageSeconds: number;
+  rebaseCount: number;
 }
 
 function frictionFor(collider: StaticTriMeshCollider): number {
@@ -46,6 +72,7 @@ function createColliderDesc(collider: StaticTriMeshCollider): InstanceType<(type
 export class RapierPhysicsWorld {
   private world?: RapierWorld;
   private readonly active = new Map<string, ActiveCollider>();
+  private probe?: DynamicProbe;
   private accumulatorSeconds = 0;
   private totalSubsteps = 0;
   private lastSubsteps = 0;
@@ -69,9 +96,7 @@ export class RapierPhysicsWorld {
 
     for (const collider of batch.updated) {
       if (this.removeCollider(collider.colliderId)) removed += 1;
-      if (this.addCollider(collider)) {
-        updated += 1;
-      }
+      if (this.addCollider(collider)) updated += 1;
     }
 
     for (const collider of batch.created) {
@@ -82,6 +107,53 @@ export class RapierPhysicsWorld {
     }
 
     return this.stats({ created, updated, removed });
+  }
+
+  spawnProbe(position: LocalPhysicsPoint): DynamicProbeState {
+    if (!this.world) return this.getProbeState();
+    this.removeProbe();
+
+    const body = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(position.x, position.y, position.z)
+        .setCcdEnabled(true)
+        .setCanSleep(true)
+        .setLinearDamping(0.08)
+        .setAngularDamping(0.12),
+    );
+    const collider = this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(
+        PROBE_HALF_EXTENT_METERS,
+        PROBE_HALF_EXTENT_METERS,
+        PROBE_HALF_EXTENT_METERS,
+      )
+        .setMass(PROBE_MASS_KG)
+        .setFriction(0.82)
+        .setRestitution(0.04),
+      body,
+    );
+
+    this.probe = {
+      body,
+      collider,
+      spawnedAtSubstep: this.totalSubsteps,
+      rebaseCount: 0,
+    };
+    return this.getProbeState();
+  }
+
+  removeProbe(): void {
+    if (!this.probe) return;
+    this.world?.removeRigidBody(this.probe.body);
+    this.probe = undefined;
+  }
+
+  rebaseDynamicBodies(from: FloatingOriginFrame, to: FloatingOriginFrame): void {
+    if (!this.probe || !this.world || from.revision === to.revision) return;
+    const position = this.probe.body.translation();
+    const rebased = rebaseLocalPhysicsPoint(position, from, to);
+    this.probe.body.setTranslation(rebased, true);
+    this.probe.rebaseCount += 1;
   }
 
   advance(elapsedSeconds: number): RapierPhysicsStats {
@@ -104,12 +176,44 @@ export class RapierPhysicsWorld {
     return this.stats();
   }
 
+  getProbeState(): DynamicProbeState {
+    if (!this.world || !this.probe) {
+      return {
+        active: false,
+        speedMetersPerSecond: 0,
+        sleeping: false,
+        contactPairs: 0,
+        ageSeconds: 0,
+        rebaseCount: 0,
+      };
+    }
+
+    const position = this.probe.body.translation();
+    const velocity = this.probe.body.linvel();
+    let contactPairs = 0;
+    this.world.contactPairsWith(this.probe.collider, (otherCollider) => {
+      if (this.probe?.collider.contactCollider(otherCollider, 0.02)) contactPairs += 1;
+    });
+
+    return {
+      active: true,
+      position: { x: position.x, y: position.y, z: position.z },
+      linearVelocity: { x: velocity.x, y: velocity.y, z: velocity.z },
+      speedMetersPerSecond: Math.hypot(velocity.x, velocity.y, velocity.z),
+      sleeping: this.probe.body.isSleeping(),
+      contactPairs,
+      ageSeconds: (this.totalSubsteps - this.probe.spawnedAtSubstep) * FIXED_TIMESTEP_SECONDS,
+      rebaseCount: this.probe.rebaseCount,
+    };
+  }
+
   debugRender(): { vertices: Float32Array; colors: Float32Array } | null {
     if (!this.world) return null;
     return this.world.debugRender();
   }
 
   clear(): RapierPhysicsStats {
+    this.removeProbe();
     if (this.world) {
       for (const colliderId of [...this.active.keys()]) this.removeCollider(colliderId);
     } else {
@@ -149,11 +253,16 @@ export class RapierPhysicsWorld {
     return true;
   }
 
-  private stats(delta?: Partial<Pick<RapierPhysicsStats, "created" | "updated" | "removed">>): RapierPhysicsStats {
+  private stats(
+    delta?: Partial<Pick<RapierPhysicsStats, "created" | "updated" | "removed">>,
+  ): RapierPhysicsStats {
     return {
       initialized: this.world !== undefined,
       activeColliders: this.active.size,
-      triangleCount: [...this.active.values()].reduce((total, item) => total + item.triangleCount, 0),
+      triangleCount: [...this.active.values()].reduce(
+        (total, item) => total + item.triangleCount,
+        0,
+      ),
       created: delta?.created ?? 0,
       updated: delta?.updated ?? 0,
       removed: delta?.removed ?? 0,
