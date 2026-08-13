@@ -16,11 +16,18 @@ https://tiles.openfreemap.org/styles/liberty
 
 OpenFreeMap combines OpenStreetMap-derived tiles with OpenMapTiles schema/styles and other third-party resources. Their respective attribution and licence requirements continue to apply. The hosted service is an external dependency; production deployments should review its current terms and may choose self-hosted tiles.
 
-## Planetiler
+## Rust game-road generator dependencies
 
-`road-schema/` uses Planetiler to preprocess OpenStreetMap PBF data into the separate `game_road` vector-tile layer. Mapshow currently pins Planetiler **v0.10.2**. Planetiler is distributed under the Apache License 2.0.
+`road-schema/` is implemented in Rust. The generator's software licence is separate from the ODbL obligations on the OpenStreetMap data it processes. Generated game-road tiles remain derived from OSM data and must retain appropriate OSM attribution/licence treatment.
 
-Planetiler's software licence is separate from the ODbL obligations on the OpenStreetMap data being processed. Generated game-road tiles remain derived from OSM data and must retain the appropriate OSM attribution/licence treatment.
+Core direct libraries used by the generator include:
+
+- `osmpbf` for reading OpenStreetMap PBF files — MIT OR Apache-2.0;
+- `redb` for temporary disk-backed build state — MIT OR Apache-2.0;
+- `pmtiles-rs` (`pmtiles` crate) for optional PMTiles v3 output — MIT OR Apache-2.0;
+- `prost` for the local Mapbox Vector Tile protobuf encoder — Apache-2.0.
+
+The complete Rust dependency graph is defined by `road-schema/Cargo.toml` and Cargo's resolved dependency metadata. Deployments or redistributed binaries should retain notices required by all direct and transitive dependencies.
 
 ## AWS Terrain Tiles / Tilezen / Joerd
 
