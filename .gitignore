@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .vite/
+road-schema/target/
 .DS_Store
 *.log
 .env

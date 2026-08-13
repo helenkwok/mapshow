@@ -6,6 +6,13 @@ import type {
 import { MercatorCoordinate } from "maplibre-gl";
 import * as THREE from "three";
 import type { GameRoadRecord } from "./game-roads";
+import {
+  buildCollisionStrip,
+  collisionWorldFromBodies,
+  simplifyCollisionPoints,
+  type RoadCollisionBody,
+  type RoadCollisionWorld,
+} from "./road-collision";
 import { prepareIntersectionPolygon } from "./road-intersections";
 import {
   buildLaneNetwork,
@@ -30,11 +37,14 @@ interface PreparedSegment {
   roadIndices: number[];
   lanePositions: number[];
   laneIndices: number[];
+  collisionPositions: number[];
+  collisionIndices: number[];
 }
 
 interface ActiveSurface {
   group: THREE.Group;
   fingerprint: string;
+  collision: RoadCollisionBody;
 }
 
 export interface RoadSurfaceStats {
@@ -42,8 +52,14 @@ export interface RoadSurfaceStats {
   graphNodes: number;
   directedArcs: number;
   activeLanes: number;
+  candidateLaneConnections: number;
   laneConnections: number;
+  filteredByTurnLanes: number;
+  filteredByRestrictions: number;
+  unenforcedRestrictions: number;
   intersectionPolygons: number;
+  collisionBodies: number;
+  collisionTriangles: number;
   created: number;
   replaced: number;
   removed: number;
@@ -98,6 +114,18 @@ function pushStrip(
   }
 }
 
+function appendCollisionStrip(
+  positions: number[],
+  indices: number[],
+  points: LocalPoint[],
+  halfWidth: number,
+): void {
+  const strip = buildCollisionStrip(simplifyCollisionPoints(points), halfWidth);
+  const base = positions.length / 3;
+  positions.push(...strip.positions);
+  indices.push(...strip.indices.map((index) => index + base));
+}
+
 function localProfilePoints(
   segment: RoadWorldSegment,
   world: RoadWorld,
@@ -136,8 +164,11 @@ function prepareSegment(
   const roadIndices: number[] = [];
   const lanePositions: number[] = [];
   const laneIndices: number[] = [];
+  const collisionPositions: number[] = [];
+  const collisionIndices: number[] = [];
   const elevationSignature: string[] = [];
   const uniqueOffsets = [...new Set(laneLayout.lanes.map((lane) => lane.lateralOffsetM.toFixed(3)))].map(Number);
+  const halfWidth = Math.max(1.4, segment.record.widthM / 2);
 
   for (const part of segment.parts) {
     const local = localProfilePoints(
@@ -151,13 +182,8 @@ function prepareSegment(
     );
     if (local.points.length < 2) continue;
     elevationSignature.push(...local.elevations.map((value) => value.toFixed(1)));
-    pushStrip(
-      roadPositions,
-      roadIndices,
-      local.points,
-      0,
-      Math.max(1.4, segment.record.widthM / 2),
-    );
+    pushStrip(roadPositions, roadIndices, local.points, 0, halfWidth);
+    appendCollisionStrip(collisionPositions, collisionIndices, local.points, halfWidth);
     for (const offset of uniqueOffsets) {
       pushStrip(
         lanePositions,
@@ -169,7 +195,7 @@ function prepareSegment(
     }
   }
 
-  if (roadPositions.length === 0) return null;
+  if (roadPositions.length === 0 || collisionPositions.length === 0) return null;
   const fingerprint = [
     segment.record.segmentId,
     segment.record.widthM.toFixed(1),
@@ -190,6 +216,8 @@ function prepareSegment(
     roadIndices,
     lanePositions,
     laneIndices,
+    collisionPositions,
+    collisionIndices,
   };
 }
 
@@ -226,8 +254,10 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
   private readonly scene = new THREE.Scene();
   private readonly active = new Map<string, ActiveSurface>();
   private intersectionGroup = new THREE.Group();
+  private intersectionCollisions: RoadCollisionBody[] = [];
   private laneNetwork?: RoadLaneNetwork;
   private intersectionCount = 0;
+  private collisionWorld: RoadCollisionWorld = collisionWorldFromBodies([]);
 
   private readonly materials: Record<GameRoadRecord["surfaceClass"], THREE.MeshBasicMaterial> = {
     paved: new THREE.MeshBasicMaterial({
@@ -353,6 +383,20 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
       group.position.set(prepared.origin.x, prepared.origin.y, prepared.origin.z);
       group.scale.set(prepared.meterScale, prepared.meterScale, prepared.meterScale);
 
+      const collision: RoadCollisionBody = {
+        bodyId: `${segment.key}:collision`,
+        kind: "road-segment",
+        origin: prepared.origin,
+        meterScale: prepared.meterScale,
+        positions: prepared.collisionPositions,
+        indices: prepared.collisionIndices,
+        segmentId: segment.record.segmentId,
+        surfaceClass: segment.record.surfaceClass,
+        bridge: segment.record.bridge,
+        tunnel: segment.record.tunnel,
+        layer: segment.record.layer,
+      };
+
       if (current) {
         disposeGroup(current.group);
         replaced += 1;
@@ -360,18 +404,25 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
         created += 1;
       }
       this.scene.add(group);
-      this.active.set(segment.key, { group, fingerprint: prepared.fingerprint });
+      this.active.set(segment.key, { group, fingerprint: prepared.fingerprint, collision });
     }
 
     this.rebuildIntersections(world, map, terrainEnabled);
+    this.rebuildCollisionWorld();
     if (created > 0 || replaced > 0 || removed > 0) this.map?.triggerRepaint();
     return {
       activeSegments: this.active.size,
       graphNodes: world.nodes.size,
       directedArcs: world.arcs.length,
       activeLanes: this.laneNetwork.lanes.size,
+      candidateLaneConnections: this.laneNetwork.candidateConnectionCount,
       laneConnections: this.laneNetwork.connections.length,
+      filteredByTurnLanes: this.laneNetwork.filteredByTurnLanes,
+      filteredByRestrictions: this.laneNetwork.filteredByRestrictions,
+      unenforcedRestrictions: this.laneNetwork.unenforcedRestrictionCount,
       intersectionPolygons: this.intersectionCount,
+      collisionBodies: this.collisionWorld.bodies.length,
+      collisionTriangles: this.collisionWorld.triangleCount,
       created,
       replaced,
       removed,
@@ -384,8 +435,10 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     disposeGroup(this.intersectionGroup);
     this.intersectionGroup = new THREE.Group();
     this.scene.add(this.intersectionGroup);
+    this.intersectionCollisions = [];
     this.laneNetwork = undefined;
     this.intersectionCount = 0;
+    this.collisionWorld = collisionWorldFromBodies([]);
     this.map?.triggerRepaint();
   }
 
@@ -405,10 +458,22 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     return this.intersectionCount;
   }
 
+  getCollisionWorld(): RoadCollisionWorld {
+    return this.collisionWorld;
+  }
+
+  private rebuildCollisionWorld(): void {
+    this.collisionWorld = collisionWorldFromBodies([
+      ...[...this.active.values()].map((active) => active.collision),
+      ...this.intersectionCollisions,
+    ]);
+  }
+
   private rebuildIntersections(world: RoadWorld, map: MapLibreMap, terrainEnabled: boolean): void {
     disposeGroup(this.intersectionGroup);
     this.intersectionGroup = new THREE.Group();
     this.scene.add(this.intersectionGroup);
+    this.intersectionCollisions = [];
     this.intersectionCount = 0;
 
     for (const node of world.nodes.values()) {
@@ -427,6 +492,19 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
       group.scale.set(prepared.meterScale, prepared.meterScale, prepared.meterScale);
       group.add(mesh);
       this.intersectionGroup.add(group);
+      this.intersectionCollisions.push({
+        bodyId: `road-intersection:${prepared.nodeId}:collision`,
+        kind: "intersection",
+        origin: prepared.origin,
+        meterScale: prepared.meterScale,
+        positions: [...prepared.positions],
+        indices: [...prepared.indices],
+        nodeId: prepared.nodeId,
+        surfaceClass: prepared.dominantSegment.record.surfaceClass,
+        bridge: prepared.dominantSegment.record.bridge,
+        tunnel: prepared.dominantSegment.record.tunnel,
+        layer: prepared.dominantSegment.record.layer,
+      });
       this.intersectionCount += 1;
     }
   }

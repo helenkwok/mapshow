@@ -1,5 +1,5 @@
 import { distanceMeters, type LngLatTuple } from "./building-feature";
-import type { GameRoadRecord } from "./game-roads";
+import type { GameRoadRecord, RoadTurnRestriction } from "./game-roads";
 import type { RoadWorld, RoadWorldSegment } from "./road-world";
 
 export type DrivingSide = "left" | "right";
@@ -42,6 +42,10 @@ export interface RoadLaneNetwork {
   layouts: Map<number, SegmentLaneLayout>;
   lanes: Map<string, RoadLane>;
   connections: RoadLaneConnection[];
+  candidateConnectionCount: number;
+  filteredByTurnLanes: number;
+  filteredByRestrictions: number;
+  unenforcedRestrictionCount: number;
 }
 
 const NOMINAL_LANE_WIDTH_METERS = 3.2;
@@ -239,15 +243,120 @@ function closestOrdinalLane(fromLane: RoadLane, candidates: RoadLane[]): RoadLan
   })[0];
 }
 
+function turnLaneValue(record: GameRoadRecord, direction: LaneDirection): string | undefined {
+  if (direction === "forward") {
+    return record.turnLanesForwardRaw ?? (record.oneway === 1 ? record.turnLanesRaw : undefined);
+  }
+  return record.turnLanesBackwardRaw ?? (record.oneway === -1 ? record.turnLanesRaw : undefined);
+}
+
+function turnsFromToken(token: string): Set<TurnKind> | undefined {
+  const values = token
+    .split(";")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (values.length === 0 || values.includes("none")) return undefined;
+
+  const turns = new Set<TurnKind>();
+  for (const value of values) {
+    if (["left", "slight_left", "sharp_left"].includes(value)) turns.add("left");
+    else if (["right", "slight_right", "sharp_right"].includes(value)) turns.add("right");
+    else if (value === "through") turns.add("straight");
+    else if (value === "reverse") turns.add("uturn");
+  }
+  // Unknown-only tokens must not make a lane unusable.
+  return turns.size > 0 ? turns : undefined;
+}
+
+function turnRulesForLayout(
+  record: GameRoadRecord,
+  layout: SegmentLaneLayout,
+): Map<string, Set<TurnKind>> {
+  const result = new Map<string, Set<TurnKind>>();
+  for (const direction of ["forward", "backward"] as const) {
+    const raw = turnLaneValue(record, direction);
+    if (!raw) continue;
+    const tokens = raw.split("|");
+    const directional = layout.lanes.filter((lane) => lane.direction === direction);
+    if (tokens.length !== directional.length) continue;
+
+    // OSM turn:lanes values are ordered left-to-right in the direction of travel.
+    const leftToRight = [...directional].sort((a, b) =>
+      direction === "forward"
+        ? b.lateralOffsetM - a.lateralOffsetM
+        : a.lateralOffsetM - b.lateralOffsetM,
+    );
+    for (let index = 0; index < leftToRight.length; index += 1) {
+      const turns = turnsFromToken(tokens[index]);
+      if (turns) result.set(leftToRight[index].laneId, turns);
+    }
+  }
+  return result;
+}
+
+function exceptsMotorcar(restriction: RoadTurnRestriction): boolean {
+  if (!restriction.except) return false;
+  const modes = restriction.except
+    .toLowerCase()
+    .split(/[;,|]/)
+    .map((value) => value.trim());
+  return modes.some((mode) => ["motorcar", "motor_vehicle", "vehicle"].includes(mode));
+}
+
+function isEnforceableRestriction(restriction: RoadTurnRestriction): boolean {
+  return (
+    restriction.viaNode !== undefined &&
+    restriction.viaWay === undefined &&
+    restriction.conditional === undefined &&
+    restriction.restriction !== undefined &&
+    !exceptsMotorcar(restriction)
+  );
+}
+
+function restrictionBlocks(
+  record: GameRoadRecord,
+  nodeId: number,
+  toSegment: RoadWorldSegment,
+): boolean {
+  for (const restriction of record.turnRestrictions) {
+    if (!isEnforceableRestriction(restriction) || restriction.viaNode !== nodeId) continue;
+    const kind = restriction.restriction!.toLowerCase();
+    const targetsToWay = toSegment.record.osmId === restriction.toWay;
+    if (kind.startsWith("no_") && targetsToWay) return true;
+    if (kind.startsWith("only_") && !targetsToWay) return true;
+  }
+  return false;
+}
+
+function unenforcedRestrictionIds(world: RoadWorld): Set<number> {
+  const ids = new Set<number>();
+  for (const segment of world.segments) {
+    for (const restriction of segment.record.turnRestrictions) {
+      if (
+        restriction.conditional !== undefined ||
+        restriction.viaWay !== undefined ||
+        (restriction.restriction === undefined && !exceptsMotorcar(restriction))
+      ) {
+        ids.add(restriction.id);
+      }
+    }
+  }
+  return ids;
+}
+
 export function buildLaneNetwork(world: RoadWorld, drivingSide: DrivingSide): RoadLaneNetwork {
   const layouts = new Map<number, SegmentLaneLayout>();
   const lanes = new Map<string, RoadLane>();
+  const turnRules = new Map<string, Set<TurnKind>>();
   const bySegment = new Map(world.segments.map((segment) => [segment.record.segmentId, segment]));
 
   for (const segment of world.segments) {
     const layout = deriveLaneLayout(segment.record, drivingSide);
     layouts.set(segment.record.segmentId, layout);
     for (const lane of layout.lanes) lanes.set(lane.laneId, lane);
+    for (const [laneId, turns] of turnRulesForLayout(segment.record, layout)) {
+      turnRules.set(laneId, turns);
+    }
   }
 
   const incomingByNode = new Map<number, RoadLane[]>();
@@ -262,6 +371,10 @@ export function buildLaneNetwork(world: RoadWorld, drivingSide: DrivingSide): Ro
   }
 
   const connections: RoadLaneConnection[] = [];
+  let candidateConnectionCount = 0;
+  let filteredByTurnLanes = 0;
+  let filteredByRestrictions = 0;
+
   for (const [nodeId, incoming] of incomingByNode) {
     const node = world.nodes.get(nodeId);
     const outgoing = outgoingByNode.get(nodeId) ?? [];
@@ -285,6 +398,18 @@ export function buildLaneNetwork(world: RoadWorld, drivingSide: DrivingSide): Ro
         if (turn === "uturn") continue;
         const toLane = closestOrdinalLane(fromLane, candidates);
         if (!toLane) continue;
+        candidateConnectionCount += 1;
+
+        const laneTurns = turnRules.get(fromLane.laneId);
+        if (laneTurns && !laneTurns.has(turn)) {
+          filteredByTurnLanes += 1;
+          continue;
+        }
+        if (restrictionBlocks(fromSegment.record, nodeId, toSegment)) {
+          filteredByRestrictions += 1;
+          continue;
+        }
+
         connections.push({
           nodeId,
           fromLaneId: fromLane.laneId,
@@ -297,5 +422,13 @@ export function buildLaneNetwork(world: RoadWorld, drivingSide: DrivingSide): Ro
     }
   }
 
-  return { layouts, lanes, connections };
+  return {
+    layouts,
+    lanes,
+    connections,
+    candidateConnectionCount,
+    filteredByTurnLanes,
+    filteredByRestrictions,
+    unenforcedRestrictionCount: unenforcedRestrictionIds(world).size,
+  };
 }

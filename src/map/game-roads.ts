@@ -8,9 +8,19 @@ import type {
 export const GAME_ROAD_SOURCE_ID = "mapshow-game-roads";
 export const GAME_ROAD_SOURCE_LAYER = "game_road";
 export const GAME_ROAD_DEBUG_LAYER_ID = "mapshow-game-roads-debug";
-export const GAME_ROAD_SCHEMA_VERSION = 2;
+export const GAME_ROAD_SCHEMA_VERSION = 3;
 
 export type GameRoadFeature = GeoJSONFeature | MapGeoJSONFeature;
+
+export interface RoadTurnRestriction {
+  id: number;
+  restriction?: string;
+  toWay: number;
+  viaNode?: number;
+  viaWay?: number;
+  except?: string;
+  conditional?: string;
+}
 
 export interface GameRoadRecord {
   schemaVersion: number;
@@ -26,6 +36,13 @@ export interface GameRoadRecord {
   lanes?: number;
   lanesForward?: number;
   lanesBackward?: number;
+  turnLanesRaw?: string;
+  turnLanesForwardRaw?: string;
+  turnLanesBackwardRaw?: string;
+  changeLanesRaw?: string;
+  changeLanesForwardRaw?: string;
+  changeLanesBackwardRaw?: string;
+  turnRestrictions: RoadTurnRestriction[];
   speedKmh?: number;
   speedForwardKmh?: number;
   speedBackwardKmh?: number;
@@ -77,6 +94,46 @@ function booleanProperty(properties: Record<string, unknown>, key: string): bool
 
 function featureSourceLayer(feature: GameRoadFeature): string | undefined {
   return "sourceLayer" in feature ? feature.sourceLayer : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function parseTurnRestrictions(raw: string | undefined): RoadTurnRestriction[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const result: RoadTurnRestriction[] = [];
+    for (const value of parsed) {
+      if (!value || typeof value !== "object") continue;
+      const item = value as Record<string, unknown>;
+      const id = finiteNumber(item.id);
+      const toWay = finiteNumber(item.to);
+      if (id === undefined || toWay === undefined) continue;
+      const restriction = typeof item.restriction === "string" ? item.restriction : undefined;
+      const except = typeof item.except === "string" ? item.except : undefined;
+      const conditional = typeof item.conditional === "string" ? item.conditional : undefined;
+      result.push({
+        id,
+        restriction,
+        toWay,
+        viaNode: finiteNumber(item.via_node),
+        viaWay: finiteNumber(item.via_way),
+        except,
+        conditional,
+      });
+    }
+    return result;
+  } catch {
+    return [];
+  }
 }
 
 export function gameRoadFromFeature(feature: GameRoadFeature): GameRoadRecord | null {
@@ -134,6 +191,13 @@ export function gameRoadFromFeature(feature: GameRoadFeature): GameRoadRecord | 
     lanes: numberProperty(properties, "lanes"),
     lanesForward: numberProperty(properties, "lanes_forward"),
     lanesBackward: numberProperty(properties, "lanes_backward"),
+    turnLanesRaw: stringProperty(properties, "turn_lanes_raw"),
+    turnLanesForwardRaw: stringProperty(properties, "turn_lanes_forward_raw"),
+    turnLanesBackwardRaw: stringProperty(properties, "turn_lanes_backward_raw"),
+    changeLanesRaw: stringProperty(properties, "change_lanes_raw"),
+    changeLanesForwardRaw: stringProperty(properties, "change_lanes_forward_raw"),
+    changeLanesBackwardRaw: stringProperty(properties, "change_lanes_backward_raw"),
+    turnRestrictions: parseTurnRestrictions(stringProperty(properties, "turn_restrictions")),
     speedKmh: numberProperty(properties, "speed_kmh"),
     speedForwardKmh: numberProperty(properties, "speed_forward_kmh"),
     speedBackwardKmh: numberProperty(properties, "speed_backward_kmh"),
