@@ -38,7 +38,10 @@ interface SegmentAccumulator {
   fragments: LngLatTuple[][];
 }
 
-const STITCH_TOLERANCE_METERS = 0.9;
+// Adjacent MVT tiles quantize and clip the same OSM segment independently. Sub-metre equality is too
+// brittle after projection/rounding; fragments that retain the same segment_id are known to belong to
+// one continuous source segment, so allow a small bounded endpoint snap when rebuilding that line.
+const STITCH_TOLERANCE_METERS = 5;
 
 function isLngLat(value: unknown): value is LngLatTuple {
   return (
@@ -207,8 +210,6 @@ export function buildRoadWorld(
   for (const feature of features) {
     const record = gameRoadFromFeature(feature);
     if (!record) continue;
-    // access/vehicle restrictions are routing policy, not physical-existence filters. Restricted/private roads
-    // remain in the world geometry and retain their tags for a later vehicle-policy layer.
     const parts = lineParts(feature);
     if (parts.length === 0) continue;
     const existing = accumulators.get(record.segmentId);

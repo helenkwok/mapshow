@@ -101,7 +101,11 @@ jobs:
           (google-chrome --version || google-chrome-stable --version || chromium --version || chromium-browser --version)
 
       - name: Build Adelaide simulation roads
-        run: npm run roads:build -- adelaide
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://download.geofabrik.de/australia-oceania/australia/south-australia-latest.osm.pbf \
+            -o /tmp/south-australia.osm.pbf
+          npm run roads:build -- /tmp/south-australia.osm.pbf
 
       - name: Start local roads mode
         run: |
@@ -126,6 +130,9 @@ jobs:
 
       - name: Verify actual canvas rendering
         run: npm run test:visual
+
+      - name: Verify King William Road continuity
+        run: node scripts/verify-king-william-road.mjs
 
       - name: Upload visual evidence
         if: always()

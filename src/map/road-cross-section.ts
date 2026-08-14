@@ -15,8 +15,8 @@ export interface RoadCrossSection {
 const MIN_LANE_WIDTH_M = 2.6;
 const MAX_LANE_WIDTH_M = 3.7;
 const MIN_ROAD_WIDTH_M = 2.8;
-const MIN_JUNCTION_TRIM_M = 2.4;
-const MAX_JUNCTION_TRIM_M = 7.5;
+const MIN_JUNCTION_PORTAL_M = 2.4;
+const MAX_JUNCTION_PORTAL_M = 7.5;
 
 function targetLaneWidthM(record: GameRoadRecord): number {
   if (record.highway.endsWith("_link")) return 2.9;
@@ -120,7 +120,7 @@ export function crossSectionsForWorld(
   return result;
 }
 
-export function junctionTrimDistanceM(
+export function junctionPortalDistanceM(
   segment: RoadWorldSegment,
   node: RoadGraphNode,
   crossSections: Map<number, RoadCrossSection>,
@@ -137,7 +137,19 @@ export function junctionTrimDistanceM(
   const complexity = Math.max(0, node.incidentSegmentIds.length - 2) * 0.22;
   return clamp(
     Math.max(ownHalfWidth * 0.62, maxIncidentHalfWidth * 0.52) + 0.75 + complexity,
-    MIN_JUNCTION_TRIM_M,
-    MAX_JUNCTION_TRIM_M,
+    MIN_JUNCTION_PORTAL_M,
+    MAX_JUNCTION_PORTAL_M,
   );
+}
+
+export function junctionTrimDistanceM(
+  _segment: RoadWorldSegment,
+  _node: RoadGraphNode,
+  _crossSections: Map<number, RoadCrossSection>,
+): number {
+  // Base road and collision strips are the continuity carrier. They must never be cut away in the hope
+  // that a separately generated junction polygon will replace them: if that polygon is absent, concave,
+  // depth-occluded or at a different elevation, the result is a full-width hole. Junction polygons are
+  // therefore additive geometry only. Their portal distance is still computed separately above.
+  return 0;
 }

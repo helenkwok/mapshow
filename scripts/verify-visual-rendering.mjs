@@ -64,11 +64,7 @@ function orangeRoadMask(buffer) {
     const red = png.data[offset];
     const green = png.data[offset + 1];
     const blue = png.data[offset + 2];
-    // The local game-road carrier is #ff6b35 at 0.8 opacity. Keep this deliberately broad so
-    // antialiasing and the underlying map do not make the spatial check brittle.
-    if (red >= 185 && green >= 70 && green <= 185 && blue <= 145 && red - green >= 45) {
-      mask[pixel] = 1;
-    }
+    if (red >= 185 && green >= 70 && green <= 185 && blue <= 145 && red - green >= 45) mask[pixel] = 1;
   }
   return { width: png.width, height: png.height, mask };
 }
@@ -77,27 +73,18 @@ function dilateSquare(mask, width, height, radius) {
   const horizontal = new Uint8Array(mask.length);
   const output = new Uint8Array(mask.length);
   const prefix = new Uint32Array(Math.max(width, height) + 1);
-
-  // Horizontal centred window. Prefix sums avoid the shifted-window bug that the earlier
-  // implementation had near the left/right edges.
   for (let y = 0; y < height; y += 1) {
     prefix.fill(0, 0, width + 1);
-    for (let x = 0; x < width; x += 1) {
-      prefix[x + 1] = prefix[x] + mask[y * width + x];
-    }
+    for (let x = 0; x < width; x += 1) prefix[x + 1] = prefix[x] + mask[y * width + x];
     for (let x = 0; x < width; x += 1) {
       const left = Math.max(0, x - radius);
       const right = Math.min(width - 1, x + radius);
       horizontal[y * width + x] = prefix[right + 1] - prefix[left] > 0 ? 1 : 0;
     }
   }
-
-  // Vertical centred window over the horizontally dilated mask.
   for (let x = 0; x < width; x += 1) {
     prefix.fill(0, 0, height + 1);
-    for (let y = 0; y < height; y += 1) {
-      prefix[y + 1] = prefix[y] + horizontal[y * width + x];
-    }
+    for (let y = 0; y < height; y += 1) prefix[y + 1] = prefix[y] + horizontal[y * width + x];
     for (let y = 0; y < height; y += 1) {
       const top = Math.max(0, y - radius);
       const bottom = Math.min(height - 1, y + radius);
@@ -151,17 +138,18 @@ async function setPhysicsDebug(page, enabled) {
   );
 }
 
+async function clickZoom(page, count) {
+  const control = page.locator(".maplibregl-ctrl-zoom-in");
+  for (let index = 0; index < count; index += 1) {
+    await control.click();
+    await page.waitForTimeout(450);
+  }
+}
+
 const browser = await chromium.launch({
   executablePath,
   headless: true,
-  args: [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--enable-webgl",
-    "--ignore-gpu-blocklist",
-    "--use-gl=angle",
-    "--use-angle=swiftshader",
-  ],
+  args: ["--no-sandbox", "--disable-dev-shm-usage", "--enable-webgl", "--ignore-gpu-blocklist", "--use-gl=angle", "--use-angle=swiftshader"],
 });
 
 let exitCode = 0;
@@ -202,7 +190,6 @@ try {
   await setRoads(page, true);
   await page.waitForTimeout(1_000);
   const physicsOff = await capture(page, "physics-off");
-
   await setPhysicsDebug(page, true);
   await page.waitForTimeout(750);
   const physicsOn = await capture(page, "physics-on");
@@ -211,14 +198,8 @@ try {
   const roadThreshold = Math.max(0.002, ambientRatio * 5 + 0.0005);
   const physicsThreshold = Math.max(0.0003, ambientRatio * 5 + 0.0001);
 
-  // Reproduce the user's close-zoom failure. At z19+ the old absolute-Mercator Three.js transforms
-  // exploded metre-scale strips and debug lines into jagged wedges spanning away from their OSM roads.
   await setPhysicsDebug(page, false);
-  const zoomIn = page.locator(".maplibregl-ctrl-zoom-in");
-  for (let index = 0; index < 4; index += 1) {
-    await zoomIn.click();
-    await page.waitForTimeout(450);
-  }
+  await clickZoom(page, 4);
   await page.waitForFunction(
     () => /z19\./.test(document.querySelector("#status")?.textContent ?? ""),
     null,
@@ -233,12 +214,7 @@ try {
   const closeRoadsOff = await capture(page, "close-roads-off");
   const closeRoadChange = changedPixelMask(closeRoadsOn, closeRoadsOff);
   const orange = orangeRoadMask(closeRoadsOff);
-  const roadSupport = dilateSquare(
-    orange.mask,
-    orange.width,
-    orange.height,
-    ROAD_SUPPORT_RADIUS_PX,
-  );
+  const roadSupport = dilateSquare(orange.mask, orange.width, orange.height, ROAD_SUPPORT_RADIUS_PX);
   const closeRoadUnsupportedRatio = unsupportedChangedRatio(closeRoadChange, roadSupport);
 
   await setRoads(page, true);
@@ -285,9 +261,7 @@ try {
     exitCode = 1;
   }
   if (closeRoadUnsupportedRatio > CLOSE_ROAD_UNSUPPORTED_MAX) {
-    console.error(
-      `Close-zoom road geometry spills away from road centerlines: ${closeRoadUnsupportedRatio} > ${CLOSE_ROAD_UNSUPPORTED_MAX}`,
-    );
+    console.error(`Close-zoom road geometry spills away from road centerlines: ${closeRoadUnsupportedRatio} > ${CLOSE_ROAD_UNSUPPORTED_MAX}`);
     exitCode = 1;
   }
   if (closePhysicsChange.ratio <= physicsThreshold) {
@@ -295,9 +269,7 @@ try {
     exitCode = 1;
   }
   if (closePhysicsUnsupportedRatio > CLOSE_PHYSICS_UNSUPPORTED_MAX) {
-    console.error(
-      `Close-zoom physics geometry spills away from road centerlines: ${closePhysicsUnsupportedRatio} > ${CLOSE_PHYSICS_UNSUPPORTED_MAX}`,
-    );
+    console.error(`Close-zoom physics geometry spills away from road centerlines: ${closePhysicsUnsupportedRatio} > ${CLOSE_PHYSICS_UNSUPPORTED_MAX}`);
     exitCode = 1;
   }
 } finally {

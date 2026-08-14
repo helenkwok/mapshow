@@ -6,33 +6,41 @@ import { pipeline } from "node:stream/promises";
 
 const MEBIBYTE = 1024 * 1024;
 const CACHE_DIR = resolve(".cache/mapshow/osm");
+const DOWNLOAD_ATTEMPTS_PER_URL = 3;
+
+function bbbikeUrls(city, file) {
+  return [
+    `https://download.bbbike.org/osm/bbbike/${city}/${file}`,
+    `https://download3.bbbike.org/osm/bbbike/${city}/${file}`,
+  ];
+}
 
 const PRESETS = {
   adelaide: {
     label: "Adelaide",
     provider: "BBBike",
-    url: "https://download.bbbike.org/osm/bbbike/Adelaide/Adelaide.osm.pbf",
+    urls: bbbikeUrls("Adelaide", "Adelaide.osm.pbf"),
     cacheFile: "adelaide.osm.pbf",
     approximateSize: "18 MB",
   },
   "hong-kong": {
     label: "Hong Kong",
     provider: "Geofabrik",
-    url: "https://download.geofabrik.de/asia/china/hong-kong-latest.osm.pbf",
+    urls: ["https://download.geofabrik.de/asia/china/hong-kong-latest.osm.pbf"],
     cacheFile: "hong-kong.osm.pbf",
     approximateSize: "36 MB",
   },
   manhattan: {
     label: "Manhattan / New York",
     provider: "BBBike",
-    url: "https://download.bbbike.org/osm/bbbike/NewYork/NewYork.osm.pbf",
+    urls: bbbikeUrls("NewYork", "NewYork.osm.pbf"),
     cacheFile: "new-york.osm.pbf",
     approximateSize: "145 MB",
   },
   tokyo: {
     label: "Tokyo",
     provider: "BBBike",
-    url: "https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf",
+    urls: bbbikeUrls("Tokyo", "Tokyo.osm.pbf"),
     cacheFile: "tokyo.osm.pbf",
     approximateSize: "75 MB",
   },
@@ -78,26 +86,19 @@ function cachedFileIsUsable(path) {
   return existsSync(path) && statSync(path).size > 0;
 }
 
-async function downloadPbf(url, target, label) {
-  if (cachedFileIsUsable(target)) {
-    console.log(`Using cached ${label}: ${target} (${formatMegabytes(statSync(target).size)})`);
-    return target;
-  }
+function sleep(milliseconds) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+}
 
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const temporary = `${target}.part`;
-  rmSync(temporary, { force: true });
-
-  console.log(`Downloading ${label}...`);
-  console.log(`  ${url}`);
-
+async function downloadOnce(url, temporary) {
   const response = await fetch(url, {
     headers: {
       "user-agent": "mapshow-road-builder/0.1 (+https://github.com/helenkwok/mapshow)",
     },
+    signal: AbortSignal.timeout(45_000),
   });
   if (!response.ok || !response.body) {
-    throw new Error(`Download failed with HTTP ${response.status} ${response.statusText}`);
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
   const expectedBytes = Number(response.headers.get("content-length")) || 0;
@@ -116,16 +117,44 @@ async function downloadPbf(url, target, label) {
     },
   });
 
-  try {
-    await pipeline(Readable.fromWeb(response.body), progress, createWriteStream(temporary));
-    renameSync(temporary, target);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
+  await pipeline(Readable.fromWeb(response.body), progress, createWriteStream(temporary));
+  if (!cachedFileIsUsable(temporary)) throw new Error("download produced an empty file");
+}
+
+async function downloadPbf(urls, target, label) {
+  if (cachedFileIsUsable(target)) {
+    console.log(`Using cached ${label}: ${target} (${formatMegabytes(statSync(target).size)})`);
+    return target;
   }
 
-  console.log(`Cached ${label}: ${target} (${formatMegabytes(statSync(target).size)})`);
-  return target;
+  mkdirSync(CACHE_DIR, { recursive: true });
+  const temporary = `${target}.part`;
+  rmSync(temporary, { force: true });
+
+  let lastError;
+  for (const url of urls) {
+    for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS_PER_URL; attempt += 1) {
+      rmSync(temporary, { force: true });
+      console.log(`Downloading ${label}${attempt > 1 ? ` (attempt ${attempt})` : ""}...`);
+      console.log(`  ${url}`);
+      try {
+        await downloadOnce(url, temporary);
+        renameSync(temporary, target);
+        console.log(`Cached ${label}: ${target} (${formatMegabytes(statSync(target).size)})`);
+        return target;
+      } catch (error) {
+        lastError = error;
+        rmSync(temporary, { force: true });
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`  download attempt failed: ${message}`);
+        if (attempt < DOWNLOAD_ATTEMPTS_PER_URL) await sleep(attempt * 1_500);
+      }
+    }
+  }
+
+  throw new Error(
+    `all download sources failed${lastError ? `; last error: ${lastError instanceof Error ? lastError.message : String(lastError)}` : ""}`,
+  );
 }
 
 function normalizePreset(value) {
@@ -137,7 +166,7 @@ async function resolveInput(argument) {
   if (presetKey) {
     const preset = PRESETS[presetKey];
     const target = resolve(CACHE_DIR, preset.cacheFile);
-    return downloadPbf(preset.url, target, `${preset.label} OSM PBF from ${preset.provider}`);
+    return downloadPbf(preset.urls, target, `${preset.label} OSM PBF from ${preset.provider}`);
   }
 
   if (/^https?:\/\//i.test(argument)) {
@@ -146,7 +175,7 @@ async function resolveInput(argument) {
     if (!fileName.endsWith(".pbf")) {
       throw new Error(`Remote input must point to a .pbf file: ${argument}`);
     }
-    return downloadPbf(url.toString(), resolve(CACHE_DIR, fileName), "remote OSM PBF");
+    return downloadPbf([url.toString()], resolve(CACHE_DIR, fileName), "remote OSM PBF");
   }
 
   const input = resolve(argument);
