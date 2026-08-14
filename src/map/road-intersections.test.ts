@@ -19,7 +19,7 @@ const emptyWorld: RoadWorld = {
 };
 
 describe("parametric road junction classification", () => {
-  it("keeps degree-two source-way joins continuous", () => {
+  it("does not invent a degree-two join without resolved segment geometry", () => {
     expect(isParametricJunctionNode(node([1, 2]), emptyWorld)).toBe(false);
   });
 
