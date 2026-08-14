@@ -72,3 +72,72 @@ jobs:
             --input /tmp/monaco.osm.pbf \
             --output /tmp/game-roads.pmtiles
           test -s /tmp/game-roads.pmtiles
+
+  visual-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: road-schema -> target
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Confirm system Chrome
+        run: |
+          (google-chrome --version || google-chrome-stable --version || chromium --version || chromium-browser --version)
+
+      - name: Build Adelaide simulation roads
+        run: npm run roads:build -- adelaide
+
+      - name: Start local roads mode
+        run: |
+          npm run dev:roads -- --host 127.0.0.1 > /tmp/mapshow-vite.log 2>&1 &
+          echo $! > /tmp/mapshow-vite.pid
+          for attempt in $(seq 1 60); do
+            pid="$(cat /tmp/mapshow-vite.pid)"
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "Vite exited before becoming ready"
+              cat /tmp/mapshow-vite.log
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:5173 >/dev/null; then
+              cat /tmp/mapshow-vite.log
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Timed out waiting for Vite"
+          cat /tmp/mapshow-vite.log
+          exit 1
+
+      - name: Verify actual canvas rendering
+        run: npm run test:visual
+
+      - name: Upload visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapshow-visual-rendering
+          path: /tmp/mapshow-visual/
+          if-no-files-found: warn
+
+      - name: Stop local server
+        if: always()
+        run: |
+          if test -f /tmp/mapshow-vite.pid; then
+            kill "$(cat /tmp/mapshow-vite.pid)" || true
+          fi
