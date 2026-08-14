@@ -6,6 +6,7 @@ const APP_URL = process.env.MAPSHOW_E2E_URL ?? "http://127.0.0.1:5173";
 const OUTPUT_DIR = process.env.MAPSHOW_E2E_OUTPUT ?? "/tmp/mapshow-visual";
 const VIEWPORT = { width: 1440, height: 900 };
 const MAP_CLIP = { x: 430, y: 40, width: 980, height: 820 };
+const CLOSE_ROAD_MAX_RATIO = 0.16;
 
 const chromeCandidates = [
   process.env.CHROME_BIN,
@@ -247,6 +248,7 @@ try {
     physicsRatio,
     physicsThreshold,
     closeRoadRatio: closeRoadChange.ratio,
+    closeRoadMaxRatio: CLOSE_ROAD_MAX_RATIO,
     closeRoadUnsupportedRatio,
     closePhysicsRatio: closePhysicsChange.ratio,
     closePhysicsUnsupportedRatio,
@@ -265,6 +267,10 @@ try {
   }
   if (closeRoadChange.ratio <= roadThreshold) {
     console.error(`Close-zoom road surfaces are not visible: ${closeRoadChange.ratio} <= ${roadThreshold}`);
+    exitCode = 1;
+  }
+  if (closeRoadChange.ratio > CLOSE_ROAD_MAX_RATIO) {
+    console.error(`Close-zoom road geometry covers too much canvas: ${closeRoadChange.ratio} > ${CLOSE_ROAD_MAX_RATIO}`);
     exitCode = 1;
   }
   if (closeRoadUnsupportedRatio > 0.2) {
