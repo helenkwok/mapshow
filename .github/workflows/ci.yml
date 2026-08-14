@@ -105,14 +105,22 @@ jobs:
 
       - name: Start local roads mode
         run: |
-          npm run dev:roads > /tmp/mapshow-vite.log 2>&1 &
+          npm run dev:roads -- --host 127.0.0.1 > /tmp/mapshow-vite.log 2>&1 &
           echo $! > /tmp/mapshow-vite.pid
           for attempt in $(seq 1 60); do
+            pid="$(cat /tmp/mapshow-vite.pid)"
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "Vite exited before becoming ready"
+              cat /tmp/mapshow-vite.log
+              exit 1
+            fi
             if curl -fsS http://127.0.0.1:5173 >/dev/null; then
+              cat /tmp/mapshow-vite.log
               exit 0
             fi
             sleep 1
           done
+          echo "Timed out waiting for Vite"
           cat /tmp/mapshow-vite.log
           exit 1
 
