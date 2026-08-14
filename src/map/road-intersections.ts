@@ -26,38 +26,12 @@ function primaryPart(segment: RoadWorldSegment): LngLatTuple[] | undefined {
   return [...segment.parts].sort((a, b) => b.length - a.length)[0];
 }
 
-function unitVectorAwayFromNode(
-  segment: RoadWorldSegment,
-  nodePosition: LngLatTuple,
-): { x: number; y: number } | undefined {
-  const line = primaryPart(segment);
-  if (!line || line.length < 2) return undefined;
-  const fromStart = distanceMeters(nodePosition, line[0]) <= distanceMeters(nodePosition, line[line.length - 1]);
-  const node = fromStart ? line[0] : line[line.length - 1];
-  const next = fromStart ? line[1] : line[line.length - 2];
-  const latitudeRadians = (nodePosition[1] * Math.PI) / 180;
-  const x = (next[0] - node[0]) * Math.cos(latitudeRadians);
-  const y = next[1] - node[1];
-  const length = Math.hypot(x, y);
-  return length > 1e-12 ? { x: x / length, y: y / length } : undefined;
-}
-
-export function isParametricJunctionNode(node: RoadGraphNode, world: RoadWorld): boolean {
-  if (!node.position || node.incidentSegmentIds.length < 2) return false;
-  if (node.incidentSegmentIds.length > 2) return true;
-
-  const byId = new Map(world.segments.map((segment) => [segment.record.segmentId, segment]));
-  const incident = node.incidentSegmentIds
-    .map((id) => byId.get(id))
-    .filter((segment): segment is RoadWorldSegment => segment !== undefined);
-  if (incident.length !== 2) return false;
-
-  const a = unitVectorAwayFromNode(incident[0], node.position);
-  const b = unitVectorAwayFromNode(incident[1], node.position);
-  if (!a || !b) return false;
-  const dot = a.x * b.x + a.y * b.y;
-  // Two approaches pointing in nearly opposite directions form one continuous carriageway rather than a junction.
-  return dot > -0.94;
+export function isParametricJunctionNode(node: RoadGraphNode, _world: RoadWorld): boolean {
+  // A degree-two graph node has exactly one continuation through the node. Even when the two source
+  // segments meet at a sharp bend or OSM way boundary, cutting both strips back and inserting a fan
+  // creates an artificial junction and can leave lens-shaped holes. Let their full-width strips overlap
+  // at the shared centerline node. A physical road junction needs at least three incident road segments.
+  return node.position !== undefined && node.incidentSegmentIds.length >= 3;
 }
 
 function interpolateAlongFromEndpoint(
@@ -202,7 +176,7 @@ export function prepareIntersectionPolygon(
   const incident = node.incidentSegmentIds
     .map((id) => byId.get(id))
     .filter((segment): segment is RoadWorldSegment => segment !== undefined);
-  if (incident.length < 2) return null;
+  if (incident.length < 3) return null;
 
   const dominantSegment = [...incident].sort((a, b) => b.record.priority - a.record.priority)[0];
   const origin = MercatorCoordinate.fromLngLat(node.position, 0);
