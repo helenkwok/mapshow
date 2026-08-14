@@ -86,9 +86,17 @@ export class RapierDebugLayer implements CustomLayerInterface {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 });
+    // Debug geometry must stay diagnostic even when it lies exactly on terrain or road colliders.
+    const material = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+      depthWrite: false,
+    });
     this.line = new THREE.LineSegments(geometry, material);
     this.line.frustumCulled = false;
+    this.line.renderOrder = 10_000;
     this.line.position.set(
       this.frame.mercator.x,
       this.frame.mercator.y,
