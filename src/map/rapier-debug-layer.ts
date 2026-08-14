@@ -31,7 +31,7 @@ export class RapierDebugLayer implements CustomLayerInterface {
   render(_gl: WebGL2RenderingContext, options: CustomRenderMethodInput): void {
     if (!this.enabled || !this.renderer || !this.line || !this.frame) return;
     this.camera.projectionMatrix = new THREE.Matrix4().fromArray(
-      Array.from(options.modelViewProjectionMatrix),
+      Array.from(options.defaultProjectionData.mainMatrix),
     );
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
