@@ -6,7 +6,9 @@ const APP_URL = process.env.MAPSHOW_E2E_URL ?? "http://127.0.0.1:5173";
 const OUTPUT_DIR = process.env.MAPSHOW_E2E_OUTPUT ?? "/tmp/mapshow-visual";
 const VIEWPORT = { width: 1440, height: 900 };
 const MAP_CLIP = { x: 430, y: 40, width: 980, height: 820 };
-const CLOSE_ROAD_MAX_RATIO = 0.16;
+const ROAD_SUPPORT_RADIUS_PX = 24;
+const CLOSE_ROAD_UNSUPPORTED_MAX = 0.15;
+const CLOSE_PHYSICS_UNSUPPORTED_MAX = 0.20;
 
 const chromeCandidates = [
   process.env.CHROME_BIN,
@@ -74,26 +76,32 @@ function orangeRoadMask(buffer) {
 function dilateSquare(mask, width, height, radius) {
   const horizontal = new Uint8Array(mask.length);
   const output = new Uint8Array(mask.length);
+  const prefix = new Uint32Array(Math.max(width, height) + 1);
 
+  // Horizontal centred window. Prefix sums avoid the shifted-window bug that the earlier
+  // implementation had near the left/right edges.
   for (let y = 0; y < height; y += 1) {
-    let count = 0;
+    prefix.fill(0, 0, width + 1);
     for (let x = 0; x < width; x += 1) {
-      const addX = x + radius;
-      const removeX = x - radius - 1;
-      if (addX < width) count += mask[y * width + addX];
-      if (removeX >= 0) count -= mask[y * width + removeX];
-      horizontal[y * width + x] = count > 0 ? 1 : 0;
+      prefix[x + 1] = prefix[x] + mask[y * width + x];
+    }
+    for (let x = 0; x < width; x += 1) {
+      const left = Math.max(0, x - radius);
+      const right = Math.min(width - 1, x + radius);
+      horizontal[y * width + x] = prefix[right + 1] - prefix[left] > 0 ? 1 : 0;
     }
   }
 
+  // Vertical centred window over the horizontally dilated mask.
   for (let x = 0; x < width; x += 1) {
-    let count = 0;
+    prefix.fill(0, 0, height + 1);
     for (let y = 0; y < height; y += 1) {
-      const addY = y + radius;
-      const removeY = y - radius - 1;
-      if (addY < height) count += horizontal[addY * width + x];
-      if (removeY >= 0) count -= horizontal[removeY * width + x];
-      output[y * width + x] = count > 0 ? 1 : 0;
+      prefix[y + 1] = prefix[y] + horizontal[y * width + x];
+    }
+    for (let y = 0; y < height; y += 1) {
+      const top = Math.max(0, y - radius);
+      const bottom = Math.min(height - 1, y + radius);
+      output[y * width + x] = prefix[bottom + 1] - prefix[top] > 0 ? 1 : 0;
     }
   }
   return output;
@@ -203,8 +211,8 @@ try {
   const roadThreshold = Math.max(0.002, ambientRatio * 5 + 0.0005);
   const physicsThreshold = Math.max(0.0003, ambientRatio * 5 + 0.0001);
 
-  // Reproduce the user's close-zoom failure. Absolute Mercator transforms can look plausible at z15-16
-  // yet lose enough precision near z20 to explode metre-scale meshes into giant triangles.
+  // Reproduce the user's close-zoom failure. At z19+ the old absolute-Mercator Three.js transforms
+  // exploded metre-scale strips and debug lines into jagged wedges spanning away from their OSM roads.
   await setPhysicsDebug(page, false);
   const zoomIn = page.locator(".maplibregl-ctrl-zoom-in");
   for (let index = 0; index < 4; index += 1) {
@@ -225,7 +233,12 @@ try {
   const closeRoadsOff = await capture(page, "close-roads-off");
   const closeRoadChange = changedPixelMask(closeRoadsOn, closeRoadsOff);
   const orange = orangeRoadMask(closeRoadsOff);
-  const roadSupport = dilateSquare(orange.mask, orange.width, orange.height, 72);
+  const roadSupport = dilateSquare(
+    orange.mask,
+    orange.width,
+    orange.height,
+    ROAD_SUPPORT_RADIUS_PX,
+  );
   const closeRoadUnsupportedRatio = unsupportedChangedRatio(closeRoadChange, roadSupport);
 
   await setRoads(page, true);
@@ -248,10 +261,12 @@ try {
     physicsRatio,
     physicsThreshold,
     closeRoadRatio: closeRoadChange.ratio,
-    closeRoadMaxRatio: CLOSE_ROAD_MAX_RATIO,
+    roadSupportRadiusPx: ROAD_SUPPORT_RADIUS_PX,
     closeRoadUnsupportedRatio,
+    closeRoadUnsupportedMax: CLOSE_ROAD_UNSUPPORTED_MAX,
     closePhysicsRatio: closePhysicsChange.ratio,
     closePhysicsUnsupportedRatio,
+    closePhysicsUnsupportedMax: CLOSE_PHYSICS_UNSUPPORTED_MAX,
     consoleErrors,
   };
   writeFileSync(`${OUTPUT_DIR}/metrics.json`, `${JSON.stringify(metrics, null, 2)}\n`);
@@ -269,20 +284,20 @@ try {
     console.error(`Close-zoom road surfaces are not visible: ${closeRoadChange.ratio} <= ${roadThreshold}`);
     exitCode = 1;
   }
-  if (closeRoadChange.ratio > CLOSE_ROAD_MAX_RATIO) {
-    console.error(`Close-zoom road geometry covers too much canvas: ${closeRoadChange.ratio} > ${CLOSE_ROAD_MAX_RATIO}`);
-    exitCode = 1;
-  }
-  if (closeRoadUnsupportedRatio > 0.2) {
-    console.error(`Close-zoom road geometry spills away from road centerlines: ${closeRoadUnsupportedRatio} > 0.2`);
+  if (closeRoadUnsupportedRatio > CLOSE_ROAD_UNSUPPORTED_MAX) {
+    console.error(
+      `Close-zoom road geometry spills away from road centerlines: ${closeRoadUnsupportedRatio} > ${CLOSE_ROAD_UNSUPPORTED_MAX}`,
+    );
     exitCode = 1;
   }
   if (closePhysicsChange.ratio <= physicsThreshold) {
     console.error(`Close-zoom physics debug is not visible: ${closePhysicsChange.ratio} <= ${physicsThreshold}`);
     exitCode = 1;
   }
-  if (closePhysicsUnsupportedRatio > 0.25) {
-    console.error(`Close-zoom physics geometry spills away from road centerlines: ${closePhysicsUnsupportedRatio} > 0.25`);
+  if (closePhysicsUnsupportedRatio > CLOSE_PHYSICS_UNSUPPORTED_MAX) {
+    console.error(
+      `Close-zoom physics geometry spills away from road centerlines: ${closePhysicsUnsupportedRatio} > ${CLOSE_PHYSICS_UNSUPPORTED_MAX}`,
+    );
     exitCode = 1;
   }
 } finally {
