@@ -18,12 +18,16 @@ const emptyWorld: RoadWorld = {
   arcs: [],
 };
 
-describe("parametric road junction classification", () => {
-  it("does not invent a degree-two join without resolved segment geometry", () => {
-    expect(isParametricJunctionNode(node([1, 2]), emptyWorld)).toBe(false);
+describe("parametric road-node coverage", () => {
+  it("covers degree-one endpoints so carrier strips have round caps", () => {
+    expect(isParametricJunctionNode(node([1]), emptyWorld)).toBe(true);
   });
 
-  it("treats degree-three road nodes as physical junctions", () => {
+  it("covers degree-two joins additively", () => {
+    expect(isParametricJunctionNode(node([1, 2]), emptyWorld)).toBe(true);
+  });
+
+  it("covers degree-three road junctions", () => {
     expect(isParametricJunctionNode(node([1, 2, 3]), emptyWorld)).toBe(true);
   });
 
