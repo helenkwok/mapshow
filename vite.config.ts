@@ -8,6 +8,9 @@ export default defineConfig(({ mode }) => ({
   define: mode === "roads"
     ? {
         "import.meta.env.VITE_GAME_ROADS_TILEJSON": JSON.stringify(LOCAL_GAME_ROAD_TILEJSON),
+        // Local roads mode is a validation workflow. Show the Rust game-road centerlines by default so
+        // it is immediately obvious which roads come from the simulation tiles rather than OpenFreeMap.
+        "import.meta.env.VITE_GAME_ROADS_DEBUG": JSON.stringify("true"),
       }
     : undefined,
   plugins: [
