@@ -135,6 +135,9 @@ jobs:
       - name: Verify actual canvas rendering
         run: npm run test:visual
 
+      - name: Verify King William Road continuity
+        run: node scripts/verify-king-william-road.mjs
+
       - name: Upload visual evidence
         if: always()
         uses: actions/upload-artifact@v4
