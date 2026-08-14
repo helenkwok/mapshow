@@ -101,7 +101,15 @@ jobs:
           (google-chrome --version || google-chrome-stable --version || chromium --version || chromium-browser --version)
 
       - name: Build Adelaide simulation roads
-        run: npm run roads:build -- adelaide
+        run: |
+          if npm run roads:build -- adelaide; then
+            exit 0
+          fi
+          echo "Adelaide city extract unavailable; falling back to Geofabrik South Australia."
+          curl -fsSL --retry 5 --retry-all-errors \
+            https://download.geofabrik.de/australia-oceania/australia/south-australia-latest.osm.pbf \
+            -o /tmp/south-australia.osm.pbf
+          npm run roads:build -- /tmp/south-australia.osm.pbf
 
       - name: Start local roads mode
         run: |
