@@ -4,7 +4,7 @@ import {
   junctionTrimDistanceM,
   type RoadCrossSection,
 } from "./road-cross-section";
-import { buildRoadProfilePart, roadNodeElevation } from "./road-profile";
+import { buildRoadProfilePart } from "./road-profile";
 import type { RoadGraphNode, RoadWorld, RoadWorldSegment } from "./road-world";
 
 interface Vertex2D {
@@ -174,6 +174,22 @@ function orderedBoundary(points: Vertex2D[]): Vertex2D[] {
   return result;
 }
 
+function portalCenterElevation(boundary: Vertex2D[]): number {
+  // The fill belongs to the same surface as its trimmed road portals. Sampling the node independently
+  // can put a mixed bridge/ground junction centre on terrain while its portal edges remain on the deck,
+  // producing a fan that dives through MapLibre terrain and appears as a white gap. A median keeps the
+  // centre on the local road surface and is robust to one incident approach having a noisy DEM sample.
+  const elevations = boundary
+    .map((vertex) => vertex.z)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  if (elevations.length === 0) return 0;
+  const middle = Math.floor(elevations.length / 2);
+  return elevations.length % 2 === 0
+    ? (elevations[middle - 1] + elevations[middle]) / 2
+    : elevations[middle];
+}
+
 export function prepareIntersectionPolygon(
   node: RoadGraphNode,
   world: RoadWorld,
@@ -207,7 +223,7 @@ export function prepareIntersectionPolygon(
   );
   if (boundary.length < 3) return null;
 
-  const centerZ = roadNodeElevation(map, world, node.nodeId, terrainEnabled);
+  const centerZ = portalCenterElevation(boundary);
   const positions: number[] = [0, 0, centerZ];
   const indices: number[] = [];
   for (const vertex of boundary) positions.push(vertex.x, vertex.y, vertex.z);
