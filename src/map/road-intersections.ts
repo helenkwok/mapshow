@@ -26,12 +26,39 @@ function primaryPart(segment: RoadWorldSegment): LngLatTuple[] | undefined {
   return [...segment.parts].sort((a, b) => b.length - a.length)[0];
 }
 
-export function isParametricJunctionNode(node: RoadGraphNode, _world: RoadWorld): boolean {
-  // A degree-two graph node has exactly one continuation through the node. Even when the two source
-  // segments meet at a sharp bend or OSM way boundary, cutting both strips back and inserting a fan
-  // creates an artificial junction and can leave lens-shaped holes. A physical road junction needs at
-  // least three incident road segments. Base carrier strips remain continuous regardless.
-  return node.position !== undefined && node.incidentSegmentIds.length >= 3;
+function unitVectorAwayFromNode(
+  segment: RoadWorldSegment,
+  nodePosition: LngLatTuple,
+): { x: number; y: number } | undefined {
+  const line = primaryPart(segment);
+  if (!line || line.length < 2) return undefined;
+  const fromStart = distanceMeters(nodePosition, line[0]) <= distanceMeters(nodePosition, line[line.length - 1]);
+  const node = fromStart ? line[0] : line[line.length - 1];
+  const next = fromStart ? line[1] : line[line.length - 2];
+  const latitudeRadians = (nodePosition[1] * Math.PI) / 180;
+  const x = (next[0] - node[0]) * Math.cos(latitudeRadians);
+  const y = next[1] - node[1];
+  const length = Math.hypot(x, y);
+  return length > 1e-12 ? { x: x / length, y: y / length } : undefined;
+}
+
+export function isParametricJunctionNode(node: RoadGraphNode, world: RoadWorld): boolean {
+  if (!node.position || node.incidentSegmentIds.length < 2) return false;
+  if (node.incidentSegmentIds.length >= 3) return true;
+
+  // Base road/collision strips are now continuous through every node, so a degree-two join is safe to
+  // model additively. Only add a polygon when the two approaches form a real bend; nearly collinear
+  // source-way boundaries already overlap cleanly and need no extra geometry.
+  const byId = new Map(world.segments.map((segment) => [segment.record.segmentId, segment]));
+  const incident = node.incidentSegmentIds
+    .map((id) => byId.get(id))
+    .filter((segment): segment is RoadWorldSegment => segment !== undefined);
+  if (incident.length !== 2) return false;
+  const a = unitVectorAwayFromNode(incident[0], node.position);
+  const b = unitVectorAwayFromNode(incident[1], node.position);
+  if (!a || !b) return false;
+  const dot = a.x * b.x + a.y * b.y;
+  return dot > -0.985;
 }
 
 function interpolateAlongFromEndpoint(
@@ -115,44 +142,27 @@ function approachBoundaryVertices(
   const halfWidth = section.halfWidthM + 0.06;
   const elevation = nearestProfileElevation(segment, world, map, terrainEnabled, approach);
   return [
-    {
-      x: centerX + normalX * halfWidth,
-      y: centerY + normalY * halfWidth,
-      z: elevation,
-    },
-    {
-      x: centerX - normalX * halfWidth,
-      y: centerY - normalY * halfWidth,
-      z: elevation,
-    },
+    { x: centerX + normalX * halfWidth, y: centerY + normalY * halfWidth, z: elevation },
+    { x: centerX - normalX * halfWidth, y: centerY - normalY * halfWidth, z: elevation },
   ];
 }
 
 function orderedBoundary(points: Vertex2D[]): Vertex2D[] {
-  const ordered = [...points].sort(
-    (a, b) => Math.atan2(a.y, a.x) - Math.atan2(b.y, b.x),
-  );
+  const ordered = [...points].sort((a, b) => Math.atan2(a.y, a.x) - Math.atan2(b.y, b.x));
   const result: Vertex2D[] = [];
   for (const point of ordered) {
     const previous = result[result.length - 1];
-    if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) > 0.18) {
-      result.push(point);
-    }
+    if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) > 0.18) result.push(point);
   }
   if (
     result.length > 2
     && Math.hypot(result[0].x - result[result.length - 1].x, result[0].y - result[result.length - 1].y) <= 0.18
-  ) {
-    result.pop();
-  }
+  ) result.pop();
   return result;
 }
 
 function portalCenterElevation(boundary: Vertex2D[]): number {
-  const elevations = boundary
-    .map((vertex) => vertex.z)
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b);
+  const elevations = boundary.map((vertex) => vertex.z).filter(Number.isFinite).sort((a, b) => a - b);
   if (elevations.length === 0) return 0;
   const middle = Math.floor(elevations.length / 2);
   return elevations.length % 2 === 0
@@ -172,23 +182,14 @@ export function prepareIntersectionPolygon(
   const incident = node.incidentSegmentIds
     .map((id) => byId.get(id))
     .filter((segment): segment is RoadWorldSegment => segment !== undefined);
-  if (incident.length < 3) return null;
+  if (incident.length < 2) return null;
 
   const dominantSegment = [...incident].sort((a, b) => b.record.priority - a.record.priority)[0];
   const origin = MercatorCoordinate.fromLngLat(node.position, 0);
   const meterScale = origin.meterInMercatorCoordinateUnits();
   const boundary = orderedBoundary(
     incident.flatMap((segment) =>
-      approachBoundaryVertices(
-        node,
-        segment,
-        world,
-        map,
-        terrainEnabled,
-        origin,
-        meterScale,
-        crossSections,
-      ),
+      approachBoundaryVertices(node, segment, world, map, terrainEnabled, origin, meterScale, crossSections),
     ),
   );
   if (boundary.length < 3) return null;
@@ -202,12 +203,5 @@ export function prepareIntersectionPolygon(
     indices.push(0, index + 1, next + 1);
   }
 
-  return {
-    nodeId: node.nodeId,
-    origin,
-    meterScale,
-    positions,
-    indices,
-    dominantSegment,
-  };
+  return { nodeId: node.nodeId, origin, meterScale, positions, indices, dominantSegment };
 }
