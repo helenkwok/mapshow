@@ -2,13 +2,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 
-const APP_URL = process.env.MAPSHOW_E2E_URL ?? "http://127.0.0.1:5173";
+const BASE_URL = process.env.MAPSHOW_E2E_URL ?? "http://127.0.0.1:5173";
 const OUTPUT_DIR = process.env.MAPSHOW_E2E_OUTPUT ?? "/tmp/mapshow-visual";
-const TARGET = { lat: -34.91630, lng: 138.59867 };
+const TARGET = { lat: -34.91630, lng: 138.59867, zoom: 19.2 };
+const APP_URL = `${BASE_URL}?lat=${TARGET.lat}&lng=${TARGET.lng}&zoom=${TARGET.zoom}&pitch=62&bearing=-18`;
 const VIEWPORT = { width: 1440, height: 900 };
 const MAP_CLIP = { x: 430, y: 40, width: 980, height: 820 };
-const CALIBRATION_PX = 48;
-const TARGET_TOLERANCE_DEGREES = 0.00018;
+const TARGET_TOLERANCE_DEGREES = 0.00008;
 
 const chromeCandidates = [
   process.env.CHROME_BIN,
@@ -48,8 +48,6 @@ function driveableRoadMask(buffer) {
     const green = png.data[offset + 1];
     const blue = png.data[offset + 2];
     const spread = Math.max(red, green, blue) - Math.min(red, green, blue);
-    // Paved/unknown Mapshow surfaces are neutral dark greys. This deliberately also admits the
-    // brown-grey unpaved material while rejecting the cream/green basemap and orange raw overlay.
     if (red >= 35 && red <= 135 && green >= 35 && green <= 125 && blue >= 35 && blue <= 125 && spread <= 45) {
       mask[pixel] = 1;
     }
@@ -106,87 +104,18 @@ async function statusCenter(page) {
   return { lat: Number(match[1]), lng: Number(match[2]), text };
 }
 
-async function dragMap(page, deltaX, deltaY) {
-  const canvas = page.locator(".maplibregl-canvas");
-  const box = await canvas.boundingBox();
-  if (!box) throw new Error("MapLibre canvas has no bounding box");
-  const startX = box.x + box.width * 0.70;
-  const startY = box.y + box.height * 0.40;
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + deltaX, startY + deltaY, { steps: 14 });
-  await page.mouse.up();
-  await page.waitForTimeout(900);
-}
-
-async function calibratePan(page) {
-  const start = await statusCenter(page);
-  await dragMap(page, CALIBRATION_PX, 0);
-  const afterX = await statusCenter(page);
-  await dragMap(page, -CALIBRATION_PX, 0);
-  const restoredX = await statusCenter(page);
-  await dragMap(page, 0, CALIBRATION_PX);
-  const afterY = await statusCenter(page);
-  await dragMap(page, 0, -CALIBRATION_PX);
-  const restored = await statusCenter(page);
-
-  return {
-    center: restored,
-    x: {
-      lat: (afterX.lat - start.lat) / CALIBRATION_PX,
-      lng: (afterX.lng - start.lng) / CALIBRATION_PX,
-    },
-    y: {
-      lat: (afterY.lat - restoredX.lat) / CALIBRATION_PX,
-      lng: (afterY.lng - restoredX.lng) / CALIBRATION_PX,
-    },
-  };
-}
-
-function solveDrag(calibration, target) {
-  const latError = target.lat - calibration.center.lat;
-  const lngError = target.lng - calibration.center.lng;
-  const determinant = calibration.x.lat * calibration.y.lng - calibration.y.lat * calibration.x.lng;
-  if (Math.abs(determinant) < 1e-12) throw new Error("Map pan calibration matrix is singular");
-  const dx = (latError * calibration.y.lng - calibration.y.lat * lngError) / determinant;
-  const dy = (calibration.x.lat * lngError - latError * calibration.x.lng) / determinant;
-  return {
-    dx: Math.max(-520, Math.min(520, dx)),
-    dy: Math.max(-520, Math.min(520, dy)),
-  };
-}
-
-async function panToTarget(page) {
-  let last;
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const calibration = await calibratePan(page);
-    last = calibration.center;
-    const latError = TARGET.lat - last.lat;
-    const lngError = TARGET.lng - last.lng;
-    if (Math.max(Math.abs(latError), Math.abs(lngError)) <= TARGET_TOLERANCE_DEGREES) return last;
-    const drag = solveDrag(calibration, TARGET);
-    await dragMap(page, drag.dx, drag.dy);
-  }
-  last = await statusCenter(page);
-  const error = Math.max(Math.abs(TARGET.lat - last.lat), Math.abs(TARGET.lng - last.lng));
-  if (error > TARGET_TOLERANCE_DEGREES * 2) {
-    throw new Error(`Unable to pan to King William target; stopped at ${last.lat}, ${last.lng}`);
-  }
-  return last;
-}
-
 async function setRoads(page, enabled) {
   const button = page.locator("#roads-toggle");
   const current = (await button.textContent())?.includes("on") === true;
   if (current !== enabled) await button.click();
-  await page.waitForTimeout(900);
+  await page.waitForTimeout(1_000);
 }
 
 async function setPhysicsDebug(page, enabled) {
   const button = page.locator("#physics-debug-toggle");
   const current = (await button.textContent())?.includes("on") === true;
   if (current !== enabled) await button.click();
-  await page.waitForTimeout(900);
+  await page.waitForTimeout(1_000);
 }
 
 const browser = await chromium.launch({
@@ -207,17 +136,10 @@ try {
     null,
     { timeout: 180_000 },
   );
-  await page.waitForTimeout(2_000);
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(3_000);
 
-  const targeted = await panToTarget(page);
-  const zoomIn = page.locator(".maplibregl-ctrl-zoom-in");
-  for (let index = 0; index < 4; index += 1) {
-    await zoomIn.click();
-    await page.waitForTimeout(450);
-  }
-  await page.waitForTimeout(2_000);
   const closeCenter = await statusCenter(page);
-
   await setPhysicsDebug(page, false);
   await setRoads(page, true);
   const roadsOn = await capture(page, "king-william-exact-roads-on");
@@ -234,15 +156,14 @@ try {
 
   const metrics = {
     target: TARGET,
-    targeted,
     closeCenter,
     centerlineGapRatio,
   };
   writeFileSync(`${OUTPUT_DIR}/king-william-metrics.json`, `${JSON.stringify(metrics, null, 2)}\n`);
   console.log(JSON.stringify(metrics, null, 2));
 
-  if (Math.max(Math.abs(closeCenter.lat - TARGET.lat), Math.abs(closeCenter.lng - TARGET.lng)) > TARGET_TOLERANCE_DEGREES * 2) {
-    console.error("King William close-zoom camera drifted too far from the requested regression location");
+  if (Math.max(Math.abs(closeCenter.lat - TARGET.lat), Math.abs(closeCenter.lng - TARGET.lng)) > TARGET_TOLERANCE_DEGREES) {
+    console.error(`King William camera did not start at requested target: ${closeCenter.lat}, ${closeCenter.lng}`);
     exitCode = 1;
   }
   if (centerlineGapRatio > 0.12) {
