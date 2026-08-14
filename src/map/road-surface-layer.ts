@@ -66,6 +66,7 @@ export interface RoadSurfaceStats {
 }
 
 const LANE_GUIDE_HALF_WIDTH_METERS = 0.055;
+export const ROAD_VISUAL_LIFT_METERS = 0.2;
 
 function pushStrip(
   positions: number[],
@@ -98,10 +99,10 @@ function pushStrip(
     positions.push(
       centerX + normalX * halfWidth,
       centerY + normalY * halfWidth,
-      point.z + 0.015,
+      point.z + ROAD_VISUAL_LIFT_METERS,
       centerX - normalX * halfWidth,
       centerY - normalY * halfWidth,
-      point.z + 0.015,
+      point.z + ROAD_VISUAL_LIFT_METERS,
     );
   }
 
@@ -488,7 +489,11 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
       group.name = `road-intersection:${prepared.nodeId}`;
       group.userData.nodeId = prepared.nodeId;
       group.userData.incidentSegments = node.incidentSegmentIds;
-      group.position.set(prepared.origin.x, prepared.origin.y, prepared.origin.z);
+      group.position.set(
+        prepared.origin.x,
+        prepared.origin.y,
+        prepared.origin.z + ROAD_VISUAL_LIFT_METERS * prepared.meterScale,
+      );
       group.scale.set(prepared.meterScale, prepared.meterScale, prepared.meterScale);
       group.add(mesh);
       this.intersectionGroup.add(group);
