@@ -366,7 +366,7 @@ export class BuildingDetailLayer implements CustomLayerInterface {
   render(_gl: WebGL2RenderingContext, options: CustomRenderMethodInput): void {
     if (!this.renderer || this.active.size === 0) return;
     this.camera.projectionMatrix = new THREE.Matrix4().fromArray(
-      Array.from(options.modelViewProjectionMatrix),
+      Array.from(options.defaultProjectionData.mainMatrix),
     );
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
