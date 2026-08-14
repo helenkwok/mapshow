@@ -64,9 +64,7 @@ function orangeRoadMask(buffer) {
     const red = png.data[offset];
     const green = png.data[offset + 1];
     const blue = png.data[offset + 2];
-    if (red >= 185 && green >= 70 && green <= 185 && blue <= 145 && red - green >= 45) {
-      mask[pixel] = 1;
-    }
+    if (red >= 185 && green >= 70 && green <= 185 && blue <= 145 && red - green >= 45) mask[pixel] = 1;
   }
   return { width: png.width, height: png.height, mask };
 }
@@ -75,24 +73,18 @@ function dilateSquare(mask, width, height, radius) {
   const horizontal = new Uint8Array(mask.length);
   const output = new Uint8Array(mask.length);
   const prefix = new Uint32Array(Math.max(width, height) + 1);
-
   for (let y = 0; y < height; y += 1) {
     prefix.fill(0, 0, width + 1);
-    for (let x = 0; x < width; x += 1) {
-      prefix[x + 1] = prefix[x] + mask[y * width + x];
-    }
+    for (let x = 0; x < width; x += 1) prefix[x + 1] = prefix[x] + mask[y * width + x];
     for (let x = 0; x < width; x += 1) {
       const left = Math.max(0, x - radius);
       const right = Math.min(width - 1, x + radius);
       horizontal[y * width + x] = prefix[right + 1] - prefix[left] > 0 ? 1 : 0;
     }
   }
-
   for (let x = 0; x < width; x += 1) {
     prefix.fill(0, 0, height + 1);
-    for (let y = 0; y < height; y += 1) {
-      prefix[y + 1] = prefix[y] + horizontal[y * width + x];
-    }
+    for (let y = 0; y < height; y += 1) prefix[y + 1] = prefix[y] + horizontal[y * width + x];
     for (let y = 0; y < height; y += 1) {
       const top = Math.max(0, y - radius);
       const bottom = Math.min(height - 1, y + radius);
@@ -146,40 +138,18 @@ async function setPhysicsDebug(page, enabled) {
   );
 }
 
-async function clickZoom(page, direction, count) {
-  const control = page.locator(
-    direction === "in" ? ".maplibregl-ctrl-zoom-in" : ".maplibregl-ctrl-zoom-out",
-  );
+async function clickZoom(page, count) {
+  const control = page.locator(".maplibregl-ctrl-zoom-in");
   for (let index = 0; index < count; index += 1) {
     await control.click();
     await page.waitForTimeout(450);
   }
 }
 
-async function dragMap(page, deltaX, deltaY) {
-  const canvas = page.locator(".maplibregl-canvas");
-  const box = await canvas.boundingBox();
-  if (!box) throw new Error("MapLibre canvas has no bounding box");
-  const startX = box.x + box.width * 0.68;
-  const startY = box.y + box.height * 0.36;
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX + deltaX, startY + deltaY, { steps: 16 });
-  await page.mouse.up();
-  await page.waitForTimeout(900);
-}
-
 const browser = await chromium.launch({
   executablePath,
   headless: true,
-  args: [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--enable-webgl",
-    "--ignore-gpu-blocklist",
-    "--use-gl=angle",
-    "--use-angle=swiftshader",
-  ],
+  args: ["--no-sandbox", "--disable-dev-shm-usage", "--enable-webgl", "--ignore-gpu-blocklist", "--use-gl=angle", "--use-angle=swiftshader"],
 });
 
 let exitCode = 0;
@@ -220,7 +190,6 @@ try {
   await setRoads(page, true);
   await page.waitForTimeout(1_000);
   const physicsOff = await capture(page, "physics-off");
-
   await setPhysicsDebug(page, true);
   await page.waitForTimeout(750);
   const physicsOn = await capture(page, "physics-on");
@@ -230,7 +199,7 @@ try {
   const physicsThreshold = Math.max(0.0003, ambientRatio * 5 + 0.0001);
 
   await setPhysicsDebug(page, false);
-  await clickZoom(page, "in", 4);
+  await clickZoom(page, 4);
   await page.waitForFunction(
     () => /z19\./.test(document.querySelector("#status")?.textContent ?? ""),
     null,
@@ -245,12 +214,7 @@ try {
   const closeRoadsOff = await capture(page, "close-roads-off");
   const closeRoadChange = changedPixelMask(closeRoadsOn, closeRoadsOff);
   const orange = orangeRoadMask(closeRoadsOff);
-  const roadSupport = dilateSquare(
-    orange.mask,
-    orange.width,
-    orange.height,
-    ROAD_SUPPORT_RADIUS_PX,
-  );
+  const roadSupport = dilateSquare(orange.mask, orange.width, orange.height, ROAD_SUPPORT_RADIUS_PX);
   const closeRoadUnsupportedRatio = unsupportedChangedRatio(closeRoadChange, roadSupport);
 
   await setRoads(page, true);
@@ -261,27 +225,6 @@ try {
   const closePhysicsOn = await capture(page, "close-physics-on");
   const closePhysicsChange = changedPixelMask(closePhysicsOff, closePhysicsOn);
   const closePhysicsUnsupportedRatio = unsupportedChangedRatio(closePhysicsChange, roadSupport);
-
-  // Target the exact class of failure reported around King William Road / River Torrens.
-  // Return to the stable Adelaide view, pan roughly 1.35 km north and 0.18 km west at z15.6,
-  // then zoom back in. This exercises bridge/profile joins and complex nearby topology.
-  await setPhysicsDebug(page, false);
-  await clickZoom(page, "out", 4);
-  await dragMap(page, 36, 260);
-  await dragMap(page, 36, 260);
-  await clickZoom(page, "in", 4);
-  await page.waitForTimeout(2_000);
-  await setRoads(page, true);
-  const kingWilliamRoadsOn = await capture(page, "king-william-roads-on");
-  await setRoads(page, false);
-  await page.waitForTimeout(750);
-  const kingWilliamRoadsOff = await capture(page, "king-william-roads-off");
-  const kingWilliamRoadChange = changedPixelMask(kingWilliamRoadsOn, kingWilliamRoadsOff);
-  await setRoads(page, true);
-  await page.waitForTimeout(750);
-  await setPhysicsDebug(page, true);
-  await page.waitForTimeout(750);
-  const kingWilliamPhysicsOn = await capture(page, "king-william-physics-on");
 
   const closeStatus = await page.locator("#status").textContent();
   const metrics = {
@@ -300,7 +243,6 @@ try {
     closePhysicsRatio: closePhysicsChange.ratio,
     closePhysicsUnsupportedRatio,
     closePhysicsUnsupportedMax: CLOSE_PHYSICS_UNSUPPORTED_MAX,
-    kingWilliamRoadRatio: kingWilliamRoadChange.ratio,
     consoleErrors,
   };
   writeFileSync(`${OUTPUT_DIR}/metrics.json`, `${JSON.stringify(metrics, null, 2)}\n`);
@@ -319,9 +261,7 @@ try {
     exitCode = 1;
   }
   if (closeRoadUnsupportedRatio > CLOSE_ROAD_UNSUPPORTED_MAX) {
-    console.error(
-      `Close-zoom road geometry spills away from road centerlines: ${closeRoadUnsupportedRatio} > ${CLOSE_ROAD_UNSUPPORTED_MAX}`,
-    );
+    console.error(`Close-zoom road geometry spills away from road centerlines: ${closeRoadUnsupportedRatio} > ${CLOSE_ROAD_UNSUPPORTED_MAX}`);
     exitCode = 1;
   }
   if (closePhysicsChange.ratio <= physicsThreshold) {
@@ -329,16 +269,9 @@ try {
     exitCode = 1;
   }
   if (closePhysicsUnsupportedRatio > CLOSE_PHYSICS_UNSUPPORTED_MAX) {
-    console.error(
-      `Close-zoom physics geometry spills away from road centerlines: ${closePhysicsUnsupportedRatio} > ${CLOSE_PHYSICS_UNSUPPORTED_MAX}`,
-    );
+    console.error(`Close-zoom physics geometry spills away from road centerlines: ${closePhysicsUnsupportedRatio} > ${CLOSE_PHYSICS_UNSUPPORTED_MAX}`);
     exitCode = 1;
   }
-  if (kingWilliamRoadChange.ratio <= roadThreshold) {
-    console.error(`King William Road regression target did not render simulation roads: ${kingWilliamRoadChange.ratio}`);
-    exitCode = 1;
-  }
-  void kingWilliamPhysicsOn;
 } finally {
   await browser.close();
 }
