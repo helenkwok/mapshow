@@ -7,6 +7,11 @@ import { MercatorCoordinate } from "maplibre-gl";
 import * as THREE from "three";
 import type { GameRoadRecord } from "./game-roads";
 import {
+  applyRelativeMercatorTransform,
+  mercatorRenderFrameAtMapCenter,
+  projectionMatrixForMercatorFrame,
+} from "./mercator-render-frame";
+import {
   buildCollisionStrip,
   collisionWorldFromBodies,
   simplifyCollisionPoints,
@@ -45,6 +50,8 @@ interface ActiveSurface {
   group: THREE.Group;
   fingerprint: string;
   collision: RoadCollisionBody;
+  origin: MercatorCoordinate;
+  meterScale: number;
 }
 
 export interface RoadSurfaceStats {
@@ -306,10 +313,26 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
   }
 
   render(_gl: WebGL2RenderingContext, options: CustomRenderMethodInput): void {
-    if (!this.renderer || (this.active.size === 0 && this.intersectionGroup.children.length === 0)) return;
-    this.camera.projectionMatrix = new THREE.Matrix4().fromArray(
-      Array.from(options.defaultProjectionData.mainMatrix),
-    );
+    if (!this.renderer || !this.map || (this.active.size === 0 && this.intersectionGroup.children.length === 0)) return;
+
+    const frame = mercatorRenderFrameAtMapCenter(this.map);
+    for (const active of this.active.values()) {
+      applyRelativeMercatorTransform(active.group, active.origin, active.meterScale, frame);
+    }
+    for (const object of this.intersectionGroup.children) {
+      const origin = object.userData.renderOrigin as MercatorCoordinate | undefined;
+      const meterScale = object.userData.renderMeterScale as number | undefined;
+      if (!origin || meterScale === undefined) continue;
+      applyRelativeMercatorTransform(
+        object,
+        origin,
+        meterScale,
+        frame,
+        Number(object.userData.renderLiftMeters ?? 0),
+      );
+    }
+
+    this.camera.projectionMatrix.copy(projectionMatrixForMercatorFrame(options, frame));
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
   }
@@ -381,8 +404,6 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
         laneMesh.name = `${segment.key}:lane-guides`;
         group.add(laneMesh);
       }
-      group.position.set(prepared.origin.x, prepared.origin.y, prepared.origin.z);
-      group.scale.set(prepared.meterScale, prepared.meterScale, prepared.meterScale);
 
       const collision: RoadCollisionBody = {
         bodyId: `${segment.key}:collision`,
@@ -405,7 +426,13 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
         created += 1;
       }
       this.scene.add(group);
-      this.active.set(segment.key, { group, fingerprint: prepared.fingerprint, collision });
+      this.active.set(segment.key, {
+        group,
+        fingerprint: prepared.fingerprint,
+        collision,
+        origin: prepared.origin,
+        meterScale: prepared.meterScale,
+      });
     }
 
     this.rebuildIntersections(world, map, terrainEnabled);
@@ -489,12 +516,9 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
       group.name = `road-intersection:${prepared.nodeId}`;
       group.userData.nodeId = prepared.nodeId;
       group.userData.incidentSegments = node.incidentSegmentIds;
-      group.position.set(
-        prepared.origin.x,
-        prepared.origin.y,
-        prepared.origin.z + ROAD_VISUAL_LIFT_METERS * prepared.meterScale,
-      );
-      group.scale.set(prepared.meterScale, prepared.meterScale, prepared.meterScale);
+      group.userData.renderOrigin = prepared.origin;
+      group.userData.renderMeterScale = prepared.meterScale;
+      group.userData.renderLiftMeters = ROAD_VISUAL_LIFT_METERS;
       group.add(mesh);
       this.intersectionGroup.add(group);
       this.intersectionCollisions.push({

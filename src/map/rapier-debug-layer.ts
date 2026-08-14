@@ -5,6 +5,10 @@ import type {
 } from "maplibre-gl";
 import * as THREE from "three";
 import type { FloatingOriginFrame } from "./floating-origin";
+import {
+  mercatorRenderFrameAt,
+  projectionMatrixForMercatorFrame,
+} from "./mercator-render-frame";
 import type { RapierPhysicsWorld } from "./rapier-physics";
 
 export class RapierDebugLayer implements CustomLayerInterface {
@@ -30,9 +34,8 @@ export class RapierDebugLayer implements CustomLayerInterface {
 
   render(_gl: WebGL2RenderingContext, options: CustomRenderMethodInput): void {
     if (!this.enabled || !this.renderer || !this.line || !this.frame) return;
-    this.camera.projectionMatrix = new THREE.Matrix4().fromArray(
-      Array.from(options.defaultProjectionData.mainMatrix),
-    );
+    const renderFrame = mercatorRenderFrameAt(this.frame.anchor, this.frame.elevationMeters);
+    this.camera.projectionMatrix.copy(projectionMatrixForMercatorFrame(options, renderFrame));
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
   }
@@ -97,12 +100,8 @@ export class RapierDebugLayer implements CustomLayerInterface {
     this.line = new THREE.LineSegments(geometry, material);
     this.line.frustumCulled = false;
     this.line.renderOrder = 10_000;
-    this.line.position.set(
-      this.frame.mercator.x,
-      this.frame.mercator.y,
-      this.frame.elevationMeters * this.frame.meterScale,
-    );
-    this.line.scale.set(this.frame.meterScale, this.frame.meterScale, this.frame.meterScale);
+    // Vertices are already local metres around FloatingOriginFrame. The frame is composed into the
+    // custom-layer projection matrix instead of stored as a tiny scale on an absolute Mercator object.
     this.scene.add(this.line);
     this.map?.triggerRepaint();
   }
