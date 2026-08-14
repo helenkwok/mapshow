@@ -5,6 +5,7 @@ import type {
 } from "maplibre-gl";
 import { MercatorCoordinate } from "maplibre-gl";
 import * as THREE from "three";
+import { distanceMeters } from "./building-feature";
 import type { GameRoadRecord } from "./game-roads";
 import {
   applyRelativeMercatorTransform,
@@ -18,7 +19,16 @@ import {
   type RoadCollisionBody,
   type RoadCollisionWorld,
 } from "./road-collision";
-import { prepareIntersectionPolygon } from "./road-intersections";
+import {
+  crossSectionsForWorld,
+  deriveRoadCrossSection,
+  junctionTrimDistanceM,
+  type RoadCrossSection,
+} from "./road-cross-section";
+import {
+  isParametricJunctionNode,
+  prepareIntersectionPolygon,
+} from "./road-intersections";
 import {
   buildLaneNetwork,
   type DrivingSide,
@@ -42,8 +52,11 @@ interface PreparedSegment {
   roadIndices: number[];
   lanePositions: number[];
   laneIndices: number[];
+  edgePositions: number[];
+  edgeIndices: number[];
   collisionPositions: number[];
   collisionIndices: number[];
+  crossSection: RoadCrossSection;
 }
 
 interface ActiveSurface {
@@ -72,7 +85,10 @@ export interface RoadSurfaceStats {
   removed: number;
 }
 
-const LANE_GUIDE_HALF_WIDTH_METERS = 0.055;
+const LANE_MARK_HALF_WIDTH_METERS = 0.045;
+const EDGE_MARK_HALF_WIDTH_METERS = 0.06;
+const JUNCTION_MARKING_SETBACK_METERS = 0.8;
+const ENDPOINT_MATCH_METERS = 1.6;
 export const ROAD_VISUAL_LIFT_METERS = 0.2;
 
 function pushStrip(
@@ -157,12 +173,83 @@ function localProfilePoints(
   return { points, elevations };
 }
 
+function interpolateLocalPoint(a: LocalPoint, b: LocalPoint, t: number): LocalPoint {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    z: a.z + (b.z - a.z) * t,
+  };
+}
+
+function trimStart(points: LocalPoint[], distanceM: number): LocalPoint[] {
+  if (distanceM <= 0 || points.length < 2) return [...points];
+  let travelled = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const a = points[index - 1];
+    const b = points[index];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (travelled + length >= distanceM) {
+      const t = length > 0 ? (distanceM - travelled) / length : 0;
+      return [interpolateLocalPoint(a, b, t), ...points.slice(index)];
+    }
+    travelled += length;
+  }
+  return [points[points.length - 1]];
+}
+
+function polylineLength(points: LocalPoint[]): number {
+  let length = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    length += Math.hypot(
+      points[index].x - points[index - 1].x,
+      points[index].y - points[index - 1].y,
+    );
+  }
+  return length;
+}
+
+function trimPolyline(points: LocalPoint[], startM: number, endM: number): LocalPoint[] {
+  if (points.length < 2) return [];
+  const total = polylineLength(points);
+  if (total <= 0.5) return [...points];
+
+  const requested = Math.max(0, startM) + Math.max(0, endM);
+  const maximum = Math.max(0, total - 0.5);
+  const scale = requested > maximum && requested > 0 ? maximum / requested : 1;
+  const start = Math.max(0, startM) * scale;
+  const end = Math.max(0, endM) * scale;
+  const afterStart = trimStart(points, start);
+  if (afterStart.length < 2 || end <= 0) return afterStart;
+  return trimStart([...afterStart].reverse(), end).reverse();
+}
+
+function trimForEndpoint(
+  segment: RoadWorldSegment,
+  world: RoadWorld,
+  endpoint: [number, number],
+  crossSections: Map<number, RoadCrossSection>,
+): number {
+  for (const nodeId of [segment.record.firstNode, segment.record.lastNode]) {
+    const node = world.nodes.get(nodeId);
+    if (
+      !node?.position
+      || !isParametricJunctionNode(node, world)
+      || distanceMeters(endpoint, node.position) > ENDPOINT_MATCH_METERS
+    ) {
+      continue;
+    }
+    return junctionTrimDistanceM(segment, node, crossSections);
+  }
+  return 0;
+}
+
 function prepareSegment(
   segment: RoadWorldSegment,
   world: RoadWorld,
   map: MapLibreMap,
   terrainEnabled: boolean,
   laneLayout: SegmentLaneLayout,
+  crossSections: Map<number, RoadCrossSection>,
   drivingSide: DrivingSide,
 ): PreparedSegment | null {
   if (segment.parts.length === 0) return null;
@@ -172,11 +259,13 @@ function prepareSegment(
   const roadIndices: number[] = [];
   const lanePositions: number[] = [];
   const laneIndices: number[] = [];
+  const edgePositions: number[] = [];
+  const edgeIndices: number[] = [];
   const collisionPositions: number[] = [];
   const collisionIndices: number[] = [];
   const elevationSignature: string[] = [];
-  const uniqueOffsets = [...new Set(laneLayout.lanes.map((lane) => lane.lateralOffsetM.toFixed(3)))].map(Number);
-  const halfWidth = Math.max(1.4, segment.record.widthM / 2);
+  const crossSection = crossSections.get(segment.record.segmentId)
+    ?? deriveRoadCrossSection(segment.record, laneLayout);
 
   for (const part of segment.parts) {
     const local = localProfilePoints(
@@ -190,15 +279,42 @@ function prepareSegment(
     );
     if (local.points.length < 2) continue;
     elevationSignature.push(...local.elevations.map((value) => value.toFixed(1)));
-    pushStrip(roadPositions, roadIndices, local.points, 0, halfWidth);
-    appendCollisionStrip(collisionPositions, collisionIndices, local.points, halfWidth);
-    for (const offset of uniqueOffsets) {
+
+    const startTrim = trimForEndpoint(segment, world, part[0], crossSections);
+    const endTrim = trimForEndpoint(segment, world, part[part.length - 1], crossSections);
+    const roadPoints = trimPolyline(local.points, startTrim, endTrim);
+    if (roadPoints.length < 2) continue;
+
+    pushStrip(roadPositions, roadIndices, roadPoints, 0, crossSection.halfWidthM);
+    appendCollisionStrip(
+      collisionPositions,
+      collisionIndices,
+      roadPoints,
+      crossSection.halfWidthM,
+    );
+
+    const markingPoints = trimPolyline(
+      local.points,
+      startTrim > 0 ? startTrim + JUNCTION_MARKING_SETBACK_METERS : 0,
+      endTrim > 0 ? endTrim + JUNCTION_MARKING_SETBACK_METERS : 0,
+    );
+    if (markingPoints.length < 2) continue;
+    for (const offset of crossSection.laneBoundaryOffsetsM) {
       pushStrip(
         lanePositions,
         laneIndices,
-        local.points,
+        markingPoints,
         offset,
-        LANE_GUIDE_HALF_WIDTH_METERS,
+        LANE_MARK_HALF_WIDTH_METERS,
+      );
+    }
+    for (const offset of crossSection.edgeOffsetsM) {
+      pushStrip(
+        edgePositions,
+        edgeIndices,
+        markingPoints,
+        offset,
+        EDGE_MARK_HALF_WIDTH_METERS,
       );
     }
   }
@@ -206,14 +322,17 @@ function prepareSegment(
   if (roadPositions.length === 0 || collisionPositions.length === 0) return null;
   const fingerprint = [
     segment.record.segmentId,
-    segment.record.widthM.toFixed(1),
+    crossSection.roadWidthM.toFixed(2),
+    crossSection.trafficWidthM.toFixed(2),
+    segment.record.widthSource,
     segment.record.bridge ? "b" : segment.record.tunnel ? "t" : "g",
     segment.record.layer,
     terrainEnabled ? "terrain" : "flat",
     drivingSide,
+    laneLayout.physicalLaneCount,
     laneLayout.forwardLaneCount,
     laneLayout.backwardLaneCount,
-    uniqueOffsets.join(","),
+    crossSection.laneBoundaryOffsetsM.map((value) => value.toFixed(2)).join(","),
     elevationSignature.join(","),
   ].join("|");
   return {
@@ -224,8 +343,11 @@ function prepareSegment(
     roadIndices,
     lanePositions,
     laneIndices,
+    edgePositions,
+    edgeIndices,
     collisionPositions,
     collisionIndices,
+    crossSection,
   };
 }
 
@@ -295,11 +417,22 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     color: 0xe7e2d6,
     side: THREE.DoubleSide,
     transparent: true,
-    opacity: 0.52,
+    opacity: 0.48,
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
+  });
+
+  private readonly edgeGuideMaterial = new THREE.MeshBasicMaterial({
+    color: 0xf1ede4,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.7,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2.5,
+    polygonOffsetUnits: -2.5,
   });
 
   constructor() {
@@ -342,6 +475,7 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     this.renderer?.dispose();
     for (const material of Object.values(this.materials)) material.dispose();
     this.laneGuideMaterial.dispose();
+    this.edgeGuideMaterial.dispose();
     this.renderer = undefined;
     this.map = undefined;
   }
@@ -353,6 +487,7 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     drivingSide: DrivingSide,
   ): RoadSurfaceStats {
     this.laneNetwork = buildLaneNetwork(world, drivingSide);
+    const crossSections = crossSectionsForWorld(world, this.laneNetwork.layouts);
     const desired = new Set(world.segments.map((segment) => segment.key));
     let created = 0;
     let replaced = 0;
@@ -374,6 +509,7 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
         map,
         terrainEnabled,
         laneLayout,
+        crossSections,
         drivingSide,
       );
       if (!prepared) continue;
@@ -386,7 +522,10 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
       group.userData.osmId = segment.record.osmId;
       group.userData.firstNode = segment.record.firstNode;
       group.userData.lastNode = segment.record.lastNode;
-      group.userData.widthM = segment.record.widthM;
+      group.userData.sourceWidthM = segment.record.widthM;
+      group.userData.widthM = prepared.crossSection.roadWidthM;
+      group.userData.trafficWidthM = prepared.crossSection.trafficWidthM;
+      group.userData.edgeMarginM = prepared.crossSection.edgeMarginM;
       group.userData.oneway = segment.record.oneway;
       group.userData.drivingSide = drivingSide;
       group.userData.laneIds = laneLayout.lanes.map((lane) => lane.laneId);
@@ -401,8 +540,16 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
           geometryFromBuffers(prepared.lanePositions, prepared.laneIndices),
           this.laneGuideMaterial,
         );
-        laneMesh.name = `${segment.key}:lane-guides`;
+        laneMesh.name = `${segment.key}:lane-boundaries`;
         group.add(laneMesh);
+      }
+      if (prepared.edgePositions.length > 0) {
+        const edgeMesh = new THREE.Mesh(
+          geometryFromBuffers(prepared.edgePositions, prepared.edgeIndices),
+          this.edgeGuideMaterial,
+        );
+        edgeMesh.name = `${segment.key}:road-edges`;
+        group.add(edgeMesh);
       }
 
       const collision: RoadCollisionBody = {
@@ -435,7 +582,7 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
       });
     }
 
-    this.rebuildIntersections(world, map, terrainEnabled);
+    this.rebuildIntersections(world, map, terrainEnabled, crossSections);
     this.rebuildCollisionWorld();
     if (created > 0 || replaced > 0 || removed > 0) this.map?.triggerRepaint();
     return {
@@ -497,7 +644,12 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     ]);
   }
 
-  private rebuildIntersections(world: RoadWorld, map: MapLibreMap, terrainEnabled: boolean): void {
+  private rebuildIntersections(
+    world: RoadWorld,
+    map: MapLibreMap,
+    terrainEnabled: boolean,
+    crossSections: Map<number, RoadCrossSection>,
+  ): void {
     disposeGroup(this.intersectionGroup);
     this.intersectionGroup = new THREE.Group();
     this.scene.add(this.intersectionGroup);
@@ -505,7 +657,13 @@ export class RoadSurfaceLayer implements CustomLayerInterface {
     this.intersectionCount = 0;
 
     for (const node of world.nodes.values()) {
-      const prepared = prepareIntersectionPolygon(node, world, map, terrainEnabled);
+      const prepared = prepareIntersectionPolygon(
+        node,
+        world,
+        map,
+        terrainEnabled,
+        crossSections,
+      );
       if (!prepared) continue;
       const geometry = geometryFromBuffers(prepared.positions, prepared.indices);
       const mesh = new THREE.Mesh(
