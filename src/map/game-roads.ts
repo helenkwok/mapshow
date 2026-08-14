@@ -226,6 +226,28 @@ export function isMotorRoad(record: GameRoadRecord): boolean {
   return true;
 }
 
+export function gameRoadCarrierLayer(debugVisible: boolean): LayerSpecification {
+  return {
+    id: GAME_ROAD_DEBUG_LAYER_ID,
+    type: "line",
+    source: GAME_ROAD_SOURCE_ID,
+    "source-layer": GAME_ROAD_SOURCE_LAYER,
+    minzoom: 12,
+    layout: {
+      // Keep this layer visible even when debugging is off. MapLibre only fetches tiles for sources used
+      // by non-hidden style layers; the Three.js road layer queries this source manually.
+      visibility: "visible",
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#ff6b35",
+      "line-width": 2,
+      "line-opacity": debugVisible ? 0.8 : 0,
+    },
+  } as LayerSpecification;
+}
+
 export function installGameRoadSource(map: MapLibreMap): GameRoadSourceInstallation {
   const tilejson = import.meta.env.VITE_GAME_ROADS_TILEJSON?.trim();
   const debugVisible = import.meta.env.VITE_GAME_ROADS_DEBUG === "true";
@@ -240,26 +262,7 @@ export function installGameRoadSource(map: MapLibreMap): GameRoadSourceInstallat
 
   if (!map.getLayer(GAME_ROAD_DEBUG_LAYER_ID)) {
     const firstSymbolLayer = map.getStyle().layers?.find((layer) => layer.type === "symbol")?.id;
-    map.addLayer(
-      {
-        id: GAME_ROAD_DEBUG_LAYER_ID,
-        type: "line",
-        source: GAME_ROAD_SOURCE_ID,
-        "source-layer": GAME_ROAD_SOURCE_LAYER,
-        minzoom: 12,
-        layout: {
-          visibility: debugVisible ? "visible" : "none",
-          "line-cap": "round",
-          "line-join": "round",
-        },
-        paint: {
-          "line-color": "#ff6b35",
-          "line-width": 2,
-          "line-opacity": 0.8,
-        },
-      } as LayerSpecification,
-      firstSymbolLayer,
-    );
+    map.addLayer(gameRoadCarrierLayer(debugVisible), firstSymbolLayer);
   }
 
   return { enabled: true, tilejson, debugVisible };
@@ -267,6 +270,9 @@ export function installGameRoadSource(map: MapLibreMap): GameRoadSourceInstallat
 
 export function setGameRoadDebugVisible(map: MapLibreMap, visible: boolean): void {
   if (map.getLayer(GAME_ROAD_DEBUG_LAYER_ID)) {
-    map.setLayoutProperty(GAME_ROAD_DEBUG_LAYER_ID, "visibility", visible ? "visible" : "none");
+    // Never hide the carrier layer with layout.visibility: none, otherwise MapLibre may stop requesting
+    // the source tiles that Mapshow's Three.js road pipeline depends on.
+    map.setLayoutProperty(GAME_ROAD_DEBUG_LAYER_ID, "visibility", "visible");
+    map.setPaintProperty(GAME_ROAD_DEBUG_LAYER_ID, "line-opacity", visible ? 0.8 : 0);
   }
 }
