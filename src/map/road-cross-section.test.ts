@@ -55,7 +55,10 @@ describe("parametric road cross sections", () => {
     expect(section.laneWidthM).toBeCloseTo(3.1, 4);
     expect(section.trafficWidthM).toBeCloseTo(12.4, 4);
     expect(section.roadWidthM).toBeCloseTo(12.9, 4);
-    expect(section.laneBoundaryOffsetsM).toEqual([3.1, 0, -3.1]);
+    expect(section.laneBoundaryOffsetsM).toHaveLength(3);
+    expect(section.laneBoundaryOffsetsM[0]).toBeCloseTo(3.1, 8);
+    expect(section.laneBoundaryOffsetsM[1]).toBeCloseTo(0, 8);
+    expect(section.laneBoundaryOffsetsM[2]).toBeCloseTo(-3.1, 8);
   });
 
   it("preserves authoritative tagged width while retaining bounded traffic lanes", () => {
