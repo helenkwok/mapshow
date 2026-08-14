@@ -42,4 +42,35 @@ export const PRESETS: Record<string, PlacePreset> = {
   },
 };
 
-export const DEFAULT_PRESET = PRESETS.adelaide;
+function queryNumber(
+  params: URLSearchParams,
+  name: string,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  const raw = params.get(name);
+  if (raw === null || raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= minimum && value <= maximum ? value : undefined;
+}
+
+function viewOverride(base: PlacePreset): PlacePreset | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const lat = queryNumber(params, "lat", -85, 85);
+  const lng = queryNumber(params, "lng", -180, 180);
+  if (lat === undefined || lng === undefined) return undefined;
+
+  return {
+    ...base,
+    label: "Custom view",
+    center: [lng, lat],
+    zoom: queryNumber(params, "zoom", 0, 24) ?? base.zoom,
+    pitch: queryNumber(params, "pitch", 0, 85) ?? base.pitch,
+    bearing: queryNumber(params, "bearing", -360, 360) ?? base.bearing,
+  };
+}
+
+// URL view parameters make visual regressions and bug reports deterministic without exposing the
+// MapLibre instance as a test-only global. Normal launches continue to use the Adelaide preset.
+export const DEFAULT_PRESET = viewOverride(PRESETS.adelaide) ?? PRESETS.adelaide;
