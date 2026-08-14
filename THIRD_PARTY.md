@@ -6,6 +6,12 @@ Mapshow's source code is licensed under Apache-2.0. Third-party software, map da
 
 Map data used through OpenFreeMap and the `road-schema/` game-road generator is derived from OpenStreetMap. OpenStreetMap data is licensed under the Open Data Commons Open Database License (ODbL). Applications and generated tiles must provide required OpenStreetMap attribution and must not assume that Mapshow's Apache-2.0 licence applies to the map database or derived database rights.
 
+### Local road-build presets
+
+`scripts/build-local-roads.mjs` can download convenience `.osm.pbf` inputs for Mapshow's built-in city presets. Adelaide, New York/Manhattan and Tokyo currently use BBBike city extracts; Hong Kong currently uses the Geofabrik Hong Kong extract. These services redistribute OpenStreetMap-derived data and retain their own service terms. The cached downloads are development inputs only and are not committed to this repository.
+
+The resulting Mapshow `game_road` tiles remain derived from OpenStreetMap data and therefore remain subject to the applicable ODbL attribution/database obligations regardless of which extract mirror supplied the input PBF.
+
 ## OpenFreeMap / OpenMapTiles
 
 The prototype uses the hosted OpenFreeMap Liberty style at:
@@ -65,7 +71,7 @@ Three.js is used for Mapshow's close-range procedural geometry and custom 3D map
 
 Mapshow uses `@dimforge/rapier3d-compat` for browser physics. Rapier is distributed under the Apache-2.0 licence. The `-compat` package provides the WebAssembly integration path used by the browser build.
 
-Rapier currently receives Mapshow-generated static road/intersection trimesh colliders and also runs Mapshow's local dynamic validation bodies (the drop probe and minimal single-body chassis). OSM-derived road/collision geometry remains subject to the underlying OSM data obligations; using Rapier does not change those data-licence requirements.
+Rapier currently receives Mapshow-generated static road/intersection trimesh colliders and also runs Mapshow's local dynamic validation bodies (the drop probe and raycast-suspension chassis). OSM-derived road/collision geometry remains subject to the underlying OSM data obligations; using Rapier does not change those data-licence requirements.
 
 ## Browser test tooling
 
