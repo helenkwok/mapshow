@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { GameRoadRecord } from "./game-roads";
-import { deriveRoadCrossSection, junctionTrimDistanceM } from "./road-cross-section";
+import {
+  deriveRoadCrossSection,
+  junctionPortalDistanceM,
+  junctionTrimDistanceM,
+} from "./road-cross-section";
 import type { SegmentLaneLayout } from "./road-lanes";
 import type { RoadGraphNode, RoadWorldSegment } from "./road-world";
 
@@ -80,7 +84,7 @@ describe("parametric road cross sections", () => {
     expect(section.laneWidthM).toBeCloseTo(2.7, 3);
   });
 
-  it("bounds junction trim distance even when a wide arterial meets local roads", () => {
+  it("keeps carrier strips continuous while bounding additive junction portals", () => {
     const arterial = record({ segmentId: 1, widthM: 20.4, lanes: 6 });
     const local = record({
       segmentId: 2,
@@ -98,13 +102,15 @@ describe("parametric road cross sections", () => {
     ]);
     const node: RoadGraphNode = {
       nodeId: 10,
-      incidentSegmentIds: [1, 2],
+      incidentSegmentIds: [1, 2, 3],
       outgoing: [],
       incoming: [],
       position: [138.6, -34.9],
     };
-    const trim = junctionTrimDistanceM(segment(arterial), node, sections);
-    expect(trim).toBeGreaterThanOrEqual(2.4);
-    expect(trim).toBeLessThanOrEqual(7.5);
+    const arterialSegment = segment(arterial);
+    expect(junctionTrimDistanceM(arterialSegment, node, sections)).toBe(0);
+    const portal = junctionPortalDistanceM(arterialSegment, node, sections);
+    expect(portal).toBeGreaterThanOrEqual(2.4);
+    expect(portal).toBeLessThanOrEqual(7.5);
   });
 });
