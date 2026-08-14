@@ -52,12 +52,38 @@ Without a `game_road` TileJSON source, simulation road surfaces and road physics
 
 ### Enable local simulation roads and physics
 
-Obtain an OpenStreetMap `.osm.pbf` extract that covers the area you want to test, then run:
+For one of Mapshow's built-in locations, `roads:build` can download and cache a matching OpenStreetMap PBF automatically:
 
 ```bash
-npm run roads:build -- data/region.osm.pbf
+npm run roads:build -- adelaide
 npm run dev:roads
 ```
+
+Available presets:
+
+```text
+adelaide    Adelaide
+hong-kong   Hong Kong
+manhattan   Manhattan / New York
+ tokyo      Tokyo
+```
+
+You can list them at any time with:
+
+```bash
+npm run roads:build -- --list
+```
+
+The presets use city/region OSM extracts from BBBike or Geofabrik and cache the downloaded `.osm.pbf` under `.cache/mapshow/osm/`. Re-running the same preset reuses the cached file.
+
+You can also pass your own local PBF or a direct HTTP(S) URL:
+
+```bash
+npm run roads:build -- path/to/region.osm.pbf
+npm run roads:build -- https://example.com/region.osm.pbf
+```
+
+`data/region.osm.pbf` is **not** bundled with Mapshow; it was an old example placeholder and should not be copied literally.
 
 `roads:build` runs the Rust generator and writes temporary development output to:
 
@@ -66,11 +92,11 @@ public/game-roads/tilejson.json
 public/game-roads/{z}/{x}/{y}.pbf
 ```
 
+The build is staged in `public/.game-roads-build/` and only replaces the previous `public/game-roads/` after Rust succeeds, so a failed build does not destroy the last working local tiles.
+
 `dev:roads` starts Vite in a dedicated `roads` mode on `http://localhost:5173` and points Mapshow at that same-origin TileJSON automatically. It uses `--strictPort` because the generated TileJSON also targets port 5173; if that port is occupied, Vite fails instead of silently changing ports.
 
-The generated `public/game-roads/` directory is ignored by Git. Re-run `roads:build` whenever you switch to a different OSM extract.
-
-**The extract must cover the location currently shown in Mapshow.** For example, an extract containing Monaco proves the pipeline works but will not provide simulation road surfaces while the map is positioned in Manhattan.
+**The extract must cover the location currently shown in Mapshow.** For example, an Adelaide extract will not provide simulation road surfaces while the map is positioned in Manhattan.
 
 For an externally hosted road tileset, continue to use `VITE_GAME_ROADS_TILEJSON`; `npm run dev:roads` is only a local convenience mode.
 
@@ -186,7 +212,7 @@ For local Vite development, prefer the `roads:build` workflow above. For hosted 
 ```bash
 cargo run --release --manifest-path road-schema/Cargo.toml -- \
   build-xyz \
-  --input data/region.osm.pbf \
+  --input path/to/region.osm.pbf \
   --output-dir data/game-roads \
   --tile-url-template 'https://tiles.example.com/game-roads/{z}/{x}/{y}.pbf'
 ```
@@ -196,7 +222,7 @@ Or build a PMTiles archive:
 ```bash
 cargo run --release --manifest-path road-schema/Cargo.toml -- \
   build-pmtiles \
-  --input data/region.osm.pbf \
+  --input path/to/region.osm.pbf \
   --output data/game-roads.pmtiles
 ```
 
@@ -253,7 +279,7 @@ CI has two independent paths.
 - a real Rapier/WASM world where the four-wheel suspension settles onto a static road trimesh;
 - wheel-driven forward motion on that trimesh.
 
-`npm run build` separately runs strict TypeScript checking and the Vite production build.
+`npm run build` separately runs strict TypeScript checking and the Vite production build. CI also runs `npm run roads:build -- --list` as a no-network syntax smoke check for the local road preset helper.
 
 ### Rust generator tests
 
@@ -286,6 +312,7 @@ src/map/vehicle-suspension.ts raycast wheel/suspension configuration
 src/map/*.test.ts             browser unit + Rapier integration tests
 road-schema/                  Rust OSM → game-road tile generator
 scripts/                      local development helpers
+.cache/mapshow/osm/           downloaded local OSM PBF cache (ignored)
 public/game-roads/            generated local XYZ tiles (ignored)
 docs/ARCHITECTURE.md          system architecture
 docs/GAME_ROADS.md            road schema/generator/runtime details
@@ -298,4 +325,4 @@ THIRD_PARTY.md                 data/software licensing and attribution
 
 Mapshow's own source code is Apache-2.0. OpenStreetMap data, OpenFreeMap/OpenMapTiles resources, elevation datasets and third-party libraries keep their own licences and attribution requirements.
 
-See [`THIRD_PARTY.md`](THIRD_PARTY.md).
+Preset downloads are convenience inputs only; the underlying OpenStreetMap data remains ODbL-licensed. See [`THIRD_PARTY.md`](THIRD_PARTY.md).
