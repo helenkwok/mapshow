@@ -1,7 +1,7 @@
 import { MercatorCoordinate, type Map as MapLibreMap } from "maplibre-gl";
 import { distanceMeters, type LngLatTuple } from "./building-feature";
 import {
-  junctionTrimDistanceM,
+  junctionPortalDistanceM,
   type RoadCrossSection,
 } from "./road-cross-section";
 import { buildRoadProfilePart } from "./road-profile";
@@ -29,8 +29,8 @@ function primaryPart(segment: RoadWorldSegment): LngLatTuple[] | undefined {
 export function isParametricJunctionNode(node: RoadGraphNode, _world: RoadWorld): boolean {
   // A degree-two graph node has exactly one continuation through the node. Even when the two source
   // segments meet at a sharp bend or OSM way boundary, cutting both strips back and inserting a fan
-  // creates an artificial junction and can leave lens-shaped holes. Let their full-width strips overlap
-  // at the shared centerline node. A physical road junction needs at least three incident road segments.
+  // creates an artificial junction and can leave lens-shaped holes. A physical road junction needs at
+  // least three incident road segments. Base carrier strips remain continuous regardless.
   return node.position !== undefined && node.incidentSegmentIds.length >= 3;
 }
 
@@ -97,7 +97,7 @@ function approachBoundaryVertices(
   const section = crossSections.get(segment.record.segmentId);
   if (!line || !section) return [];
 
-  const approachDistance = junctionTrimDistanceM(segment, node, crossSections);
+  const approachDistance = junctionPortalDistanceM(segment, node, crossSections);
   const approach = interpolateAlongFromEndpoint(line, node.position, approachDistance);
   if (!approach) return [];
   const mercator = MercatorCoordinate.fromLngLat(approach, 0);
@@ -149,10 +149,6 @@ function orderedBoundary(points: Vertex2D[]): Vertex2D[] {
 }
 
 function portalCenterElevation(boundary: Vertex2D[]): number {
-  // The fill belongs to the same surface as its trimmed road portals. Sampling the node independently
-  // can put a mixed bridge/ground junction centre on terrain while its portal edges remain on the deck,
-  // producing a fan that dives through MapLibre terrain and appears as a white gap. A median keeps the
-  // centre on the local road surface and is robust to one incident approach having a noisy DEM sample.
   const elevations = boundary
     .map((vertex) => vertex.z)
     .filter(Number.isFinite)
