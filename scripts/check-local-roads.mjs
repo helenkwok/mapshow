@@ -7,6 +7,7 @@ if (!existsSync(tilejson)) {
   console.error("Build a preset first, for example:");
   console.error("  npm run roads:build -- adelaide");
   console.error("  npm run roads:build -- hong-kong");
+  console.error("List every built-in preset with: npm run roads:build -- --list");
   console.error("Or pass your own .osm.pbf path/URL to roads:build.");
   process.exit(2);
 }
